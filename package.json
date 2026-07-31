@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.json",
     "start": "node --enable-source-maps dist/src/index.js",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run --dir test --passWithNoTests",
     "test:watch": "vitest"
   },
   "engines": {
@@ -24,6 +24,7 @@
   "dependencies": {
     "fastify": "^5.10.0",
     "openai": "^7.0.0",
+    "undici": "^8.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

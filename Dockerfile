@@ -32,3 +32,11 @@ USER node
 EXPOSE 3000
 
 CMD ["node", "--enable-source-maps", "dist/src/index.js"]
+
+
+# Export a self-contained application directory plus the Linux Node binary for
+# hosts that run systemd but do not install Node globally.
+FROM scratch AS bundle
+
+COPY --from=runtime /usr/local/bin/node /runtime/node
+COPY --from=runtime /app /app
