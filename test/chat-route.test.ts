@@ -3,10 +3,15 @@ import type { FastifyBaseLogger } from "fastify";
 import { buildApp } from "../src/app.js";
 import type { ModelClient } from "../src/model/model-client.js";
 
+/*
+ * 这些测试通过 Fastify inject 在进程内走完整 HTTP 生命周期，
+ * 同时用 ModelClient 假实现隔离真实 DeepSeek、API Key 和外部网络。
+ */
 describe("POST /v1/chat", () => {
   const apps: ReturnType<typeof buildApp>[] = [];
 
   afterEach(async () => {
+    // 主动关闭每个 Fastify 实例，避免 hook、logger 或资源句柄泄漏到下一条用例。
     await Promise.all(apps.splice(0).map((app) => app.close()));
   });
 
@@ -223,6 +228,7 @@ describe("POST /v1/chat", () => {
 function testLogger(
   overrides: { info?: ReturnType<typeof vi.fn>; warn?: ReturnType<typeof vi.fn> },
 ): FastifyBaseLogger {
+  // Fastify 要求完整 logger 接口；这里只替换用例关心的方法，其余方法使用空 mock 补齐。
   const logger = {
     level: "info",
     fatal: vi.fn(),
