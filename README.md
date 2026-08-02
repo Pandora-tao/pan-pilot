@@ -1,6 +1,6 @@
 # PanPilot
 
-PanPilot 是一个用于学习和实现 AI Agent 的 TypeScript 工作区。当前已实现无工具调用的聊天生成；流式输出、Agent Loop、工具、记忆与规划保留为后续能力。
+PanPilot 是一个用于学习和实现 AI Agent 的 TypeScript 工作区。当前已实现无工具调用的聊天生成，以及尚未接入 Agent Loop 的安全工具层；流式输出、完整工具调用、记忆与规划保留为后续能力。
 
 ## 环境
 
@@ -14,7 +14,7 @@ src/
 ├── index.ts       # 服务入口，目前仅提供健康检查
 ├── agent/         # Agent Loop 与会话控制
 ├── model/         # DeepSeek、MiMo 等模型适配
-└── tools/         # 工具定义、校验与执行
+└── tools/         # 安全工具定义、注册、校验与执行
 test/              # 测试
 ```
 
@@ -72,6 +72,17 @@ journalctl -u pan-pilot-test --since "30 minutes ago" -o cat \
 
 如果部署环境的系统 DNS 会把 DeepSeek 解析到不可达地址，可只为 PanPilot
 设置 `DEEPSEEK_RESOLVED_ADDRESS`。该覆盖不会修改主机的全局 DNS。
+
+## 安全工具层
+
+`src/tools/` 已提供工具契约、白名单注册表，以及两个只读工具：
+
+- `get_current_time`：读取指定 IANA 时区的当前时间，默认使用 UTC。
+- `calculator`：只执行参数受限的加、减、乘、除，不解析表达式或使用 `eval`。
+
+注册表统一处理 Zod 参数校验、未知/重复工具、取消信号、执行异常和结果 JSON
+序列化检查。该模块尚未接入模型协议与 `ChatAgent`，所以对外能力声明中的
+`tools` 仍为 `reserved`，`POST /v1/chat` 也不会执行工具。
 
 ## 验证与构建
 
