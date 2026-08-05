@@ -18,6 +18,7 @@ describe("POST /v1/chat", () => {
   it("returns the agent response", async () => {
     const complete = vi.fn<ModelClient["complete"]>().mockResolvedValue({
       content: "你好",
+      toolCalls: [],
       model: "test-model",
       totalTokens: 12,
     });
@@ -37,21 +38,25 @@ describe("POST /v1/chat", () => {
       usage: { totalTokens: 12 },
       execution: { mode: "chat", toolCalls: [] },
     });
-    expect(complete).toHaveBeenCalledWith([
-      {
-        role: "system",
-        content: "你是 PanPilot，一个简洁、准确的 AI 助手。",
-      },
-      {
-        role: "user",
-        content: "介绍一下你自己",
-      },
-    ]);
+    expect(complete).toHaveBeenCalledWith({
+      messages: [
+        {
+          role: "system",
+          content: "你是 PanPilot，一个简洁、准确的 AI 助手。",
+        },
+        {
+          role: "user",
+          content: "介绍一下你自己",
+        },
+      ],
+      tools: [],
+    });
   });
 
   it("forwards complete message history without replacing caller context", async () => {
     const complete = vi.fn<ModelClient["complete"]>().mockResolvedValue({
       content: "知道了",
+      toolCalls: [],
       model: "test-model",
     });
     const app = buildApp({ modelClient: { complete } });
@@ -74,12 +79,13 @@ describe("POST /v1/chat", () => {
       model: "test-model",
       usage: null,
     });
-    expect(complete).toHaveBeenCalledWith(messages);
+    expect(complete).toHaveBeenCalledWith({ messages, tools: [] });
   });
 
   it("logs complete prompts and replies when content logging is enabled", async () => {
     const complete = vi.fn<ModelClient["complete"]>().mockResolvedValue({
       content: "日志中的完整回复",
+      toolCalls: [],
       model: "test-model",
       totalTokens: 18,
     });
@@ -131,6 +137,7 @@ describe("POST /v1/chat", () => {
   it("does not log prompts or replies when content logging is disabled", async () => {
     const complete = vi.fn<ModelClient["complete"]>().mockResolvedValue({
       content: "不应记录的回复",
+      toolCalls: [],
       model: "test-model",
     });
     const info = vi.fn();
@@ -180,6 +187,7 @@ describe("POST /v1/chat", () => {
   it("protects versioned APIs when an internal token is configured", async () => {
     const complete = vi.fn<ModelClient["complete"]>().mockResolvedValue({
       content: "你好",
+      toolCalls: [],
       model: "test-model",
     });
     const app = buildApp({ modelClient: { complete }, apiToken: "internal-secret" });

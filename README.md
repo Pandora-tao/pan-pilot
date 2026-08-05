@@ -81,8 +81,9 @@ journalctl -u pan-pilot-test --since "30 minutes ago" -o cat \
 - `calculator`：只执行参数受限的加、减、乘、除，不解析表达式或使用 `eval`。
 
 注册表统一处理 Zod 参数校验、未知/重复工具、取消信号、执行异常和结果 JSON
-序列化检查。该模块尚未接入模型协议与 `ChatAgent`，所以对外能力声明中的
-`tools` 仍为 `reserved`，`POST /v1/chat` 也不会执行工具。
+序列化检查。模型协议已经支持工具定义、工具请求和工具结果消息，但注册表尚未
+接入 `ChatAgent` 的循环，所以对外能力声明中的 `tools` 仍为 `reserved`，
+`POST /v1/chat` 也不会执行工具。
 
 ## 验证与构建
 

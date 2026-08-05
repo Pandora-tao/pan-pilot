@@ -15,6 +15,7 @@ export class ChatAgent {
   constructor(private readonly modelClient: ModelClient) {}
 
   async chat(messages: readonly ModelMessage[]): Promise<ModelCompletion> {
-    return this.modelClient.complete(messages);
+    // 工具协议已经进入 ModelClient，但 Agent Loop 尚未接入，所以暂不向模型暴露工具。
+    return this.modelClient.complete({ messages, tools: [] });
   }
 }
