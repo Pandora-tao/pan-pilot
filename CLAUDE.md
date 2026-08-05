@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-PanPilot 是一个用于学习和实现 AI Agent 的 TypeScript 工作区，提供 Fastify HTTP 服务。当前已实现带工具循环的聊天生成（白名单工具、最大轮次控制、取消信号）；流式输出、记忆与规划是后续能力（当前状态见 `src/agent/capabilities.ts` 的 `reserved` 声明）。
+PanPilot 是一个用于学习和实现 AI Agent 的 TypeScript 工作区，提供 Fastify HTTP 服务。当前已实现带工具循环和 SSE 流式输出的聊天生成（白名单工具、最大轮次控制、取消信号）；记忆与规划是后续能力（当前状态见 `src/agent/capabilities.ts` 的 `reserved` 声明）。
 
 ## 常用命令
 
@@ -49,8 +49,9 @@ src/tools/       工具定义、白名单注册、校验与执行
 ## 关键约定
 
 - **能力声明优先**：新能力（tools/memory/planning/streaming）先改 `src/agent/capabilities.ts` 的状态，而不是让客户端通过调用失败来猜测
-- **协议向前兼容**：`/v1/chat` 同时接受旧 `message` 和新 `messages` 格式（二者互斥）；`stream: true` 显式返回 501，不伪装成流式响应
-- **错误码**：400 `INVALID_REQUEST`（zod 校验失败）、501 `CAPABILITY_NOT_IMPLEMENTED`、502 `CHAT_FAILED`——对外隐藏 SDK/网络/密钥细节，详细原因只进服务端日志
+- **协议向前兼容**：`/v1/chat` 同时接受旧 `message` 和新 `messages` 格式（二者互斥）；`stream: true` 走 SSE 流式响应（事件格式见下一条）
+- **错误码**：400 `INVALID_REQUEST`（zod 校验失败）、502 `CHAT_FAILED`（非流式）——对外隐藏 SDK/网络/密钥细节，详细原因只进服务端日志
+- **SSE 约定**：`/v1/chat` 的 `stream: true` 用 `text/event-stream` 返回；事件是 `data: {json}` 行，`type` 为 `content`/`tool_execution`/`done`/`error`；流建立后的失败以 `error` 事件返回，客户端断开则直接终止（响应流 close 时未正常写完会触发 AbortSignal）
 - **HTTP 不暴露工具细节**：`/v1/chat` 只返回工具执行摘要（`id`/`name`/`status`）；原始参数和工具结果只回填给模型，可能含敏感数据，不得默认回传 HTTP
 - **请求校验用 zod `.strict()`**：拒绝未声明字段，避免拼写错误被静默忽略后仍然调用付费模型
 - **TS 严格配置**：`verbatimModuleSyntax` 要求类型导入必须写 `import type`；NodeNext ESM 要求相对导入带 `.js` 后缀；`noUncheckedIndexedAccess` 要求处理索引可能 undefined；`exactOptionalPropertyTypes` 禁止把 `undefined` 显式赋给可选属性
