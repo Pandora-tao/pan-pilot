@@ -9,10 +9,12 @@ export const agentCapabilities = {
   capabilities: {
     chat: {
       status: "available",
-      streaming: false,
+      // /v1/chat 的 stream: true 已实现为 SSE 输出。
+      streaming: true,
     },
     tools: {
-      status: "reserved",
+      // 工具白名单已接入 ChatAgent 循环，/v1/chat 会执行注册的工具。
+      status: "available",
     },
     memory: {
       status: "reserved",

@@ -1,7 +1,9 @@
 import OpenAI from "openai";
 import type {
   ChatCompletion,
+  ChatCompletionChunk,
   ChatCompletionCreateParamsNonStreaming,
+  ChatCompletionCreateParamsStreaming,
   ChatCompletionMessageParam,
   ChatCompletionMessageToolCall,
   ChatCompletionTool,
@@ -9,19 +11,24 @@ import type {
 import { lookup as systemLookup } from "node:dns";
 import { isIP } from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
+import type { AgentToolDefinition } from "../tools/tool.js";
 import type {
   ModelClient,
   ModelCompletion,
   ModelMessage,
   ModelRequest,
+  ModelStreamEvent,
   ModelToolCall,
 } from "./model-client.js";
 
-/** 供测试注入的最窄 SDK 边界，避免测试访问真实模型和网络。 */
+/**
+ * 供测试注入的最窄 SDK 边界，避免测试访问真实模型和网络。
+ * 流式请求返回 AsyncIterable 增量，非流式请求返回完整 ChatCompletion。
+ */
 export type CreateChatCompletion = (
-  body: ChatCompletionCreateParamsNonStreaming,
+  body: ChatCompletionCreateParamsNonStreaming | ChatCompletionCreateParamsStreaming,
   options?: { signal?: AbortSignal },
-) => PromiseLike<ChatCompletion>;
+) => PromiseLike<ChatCompletion | AsyncIterable<ChatCompletionChunk>>;
 
 export interface DeepSeekClientOptions {
   createCompletion?: CreateChatCompletion;
@@ -98,14 +105,7 @@ export class DeepSeekClient implements ModelClient {
   }
 
   async complete(request: ModelRequest): Promise<ModelCompletion> {
-    const tools: ChatCompletionTool[] = request.tools.map((tool) => ({
-      type: "function",
-      function: {
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters,
-      },
-    }));
+    const tools = toProviderTools(request.tools);
     const body: ChatCompletionCreateParamsNonStreaming = {
       model: this.model,
       messages: request.messages.map(toProviderMessage),
@@ -117,6 +117,11 @@ export class DeepSeekClient implements ModelClient {
       body,
       request.signal === undefined ? undefined : { signal: request.signal },
     );
+    if (!isChatCompletion(response)) {
+      throw new Error(
+        "Model client returned a streaming response for a non-streaming request",
+      );
+    }
 
     const message = response.choices[0]?.message;
     if (!message) {
@@ -139,6 +144,129 @@ export class DeepSeekClient implements ModelClient {
       ...(totalTokens === undefined ? {} : { totalTokens }),
     };
   }
+
+  async *completeStream(
+    request: ModelRequest,
+  ): AsyncGenerator<ModelStreamEvent> {
+    const tools = toProviderTools(request.tools);
+    const body: ChatCompletionCreateParamsStreaming = {
+      model: this.model,
+      messages: request.messages.map(toProviderMessage),
+      stream: true,
+      // 兼容 OpenAI 的 usage 汇总：最后一个 chunk 会带完整 token 统计。
+      stream_options: { include_usage: true },
+      ...(tools.length === 0
+        ? {}
+        : { tools, tool_choice: "auto" as const }),
+    };
+    const stream = await this.createCompletion(
+      body,
+      request.signal === undefined ? undefined : { signal: request.signal },
+    );
+    if (!isAsyncIterable(stream)) {
+      throw new Error(
+        "Model client returned a non-streaming response for a streaming request",
+      );
+    }
+
+    // OpenAI 兼容协议把工具调用拆成多个增量：按 index 累积 id/name/arguments 片段。
+    const toolCallDeltas = new Map<
+      number,
+      { id?: string; name: string; arguments: string }
+    >();
+    let content = "";
+    let totalTokens: number | undefined;
+    let model = "";
+
+    for await (const chunk of stream) {
+      model = chunk.model;
+      if (chunk.usage?.total_tokens !== undefined) {
+        totalTokens = chunk.usage.total_tokens;
+      }
+
+      const choice = chunk.choices[0];
+      if (!choice) continue;
+
+      const delta = choice.delta;
+      if (delta?.content) {
+        content += delta.content;
+        yield { type: "content", content: delta.content };
+      }
+
+      for (const toolCall of delta?.tool_calls ?? []) {
+        const current = toolCallDeltas.get(toolCall.index)
+          ?? { name: "", arguments: "" };
+        if (toolCall.id !== undefined && toolCall.id !== null) {
+          current.id = toolCall.id;
+        }
+        if (toolCall.function?.name) {
+          current.name += toolCall.function.name;
+        }
+        if (toolCall.function?.arguments) {
+          current.arguments += toolCall.function.arguments;
+        }
+        toolCallDeltas.set(toolCall.index, current);
+      }
+    }
+
+    const toolCalls: ModelToolCall[] = [...toolCallDeltas.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([index, delta]) => {
+        if (!delta.id) {
+          throw new Error("Model returned tool call without id");
+        }
+        if (!delta.name) {
+          throw new Error("Model returned tool call without name");
+        }
+        return {
+          id: delta.id,
+          name: delta.name,
+          arguments: parseToolArguments(delta.arguments),
+        };
+      });
+
+    const finalContent = content.trim();
+
+    // 工具调用阶段通常没有正文；只有两者同时为空才是无效模型响应。
+    if (!finalContent && toolCalls.length === 0) {
+      throw new Error("Model returned neither content nor tool calls");
+    }
+
+    yield {
+      type: "completion",
+      completion: {
+        content: finalContent,
+        toolCalls,
+        model,
+        ...(totalTokens === undefined ? {} : { totalTokens }),
+      },
+    };
+  }
+}
+
+function toProviderTools(tools: readonly AgentToolDefinition[]): ChatCompletionTool[] {
+  return tools.map((tool) => ({
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  }));
+}
+
+function isChatCompletion(
+  value: ChatCompletion | AsyncIterable<ChatCompletionChunk>,
+): value is ChatCompletion {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<ChatCompletion>;
+  return Array.isArray(candidate.choices);
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  return typeof (value as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator]
+    === "function";
 }
 
 function toProviderMessage(message: ModelMessage): ChatCompletionMessageParam {

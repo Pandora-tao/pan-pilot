@@ -46,10 +46,21 @@ export interface ModelCompletion {
 }
 
 /**
+ * 模型流式输出事件：适配器负责把厂商增量归一化。
+ *
+ * - content：文本增量，Agent 可直接转发给客户端；
+ * - completion：本轮完整结果，只在流结束时出现一次。
+ */
+export type ModelStreamEvent =
+  | { type: "content"; content: string }
+  | { type: "completion"; completion: ModelCompletion };
+
+/**
  * 模型适配端口。
  *
  * Agent 只认识这个接口；真实运行时可接 DeepSeek，测试时则可传入内存中的假实现。
  */
 export interface ModelClient {
   complete(request: ModelRequest): Promise<ModelCompletion>;
+  completeStream(request: ModelRequest): AsyncIterable<ModelStreamEvent>;
 }

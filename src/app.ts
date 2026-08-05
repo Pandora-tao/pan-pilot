@@ -6,6 +6,9 @@ import type { ModelClient } from "./model/model-client.js";
 import { registerCapabilitiesRoute } from "./routes/capabilities-route.js";
 import { registerChatRoute } from "./routes/chat-route.js";
 import { registerHealthRoute } from "./routes/health-route.js";
+import { calculatorTool } from "./tools/calculator.js";
+import { getCurrentTimeTool } from "./tools/get-current-time.js";
+import { ToolRegistry } from "./tools/tool-registry.js";
 
 /**
  * 允许启动入口使用默认生产依赖，也允许测试注入模型和日志替身。
@@ -27,7 +30,9 @@ export function buildApp(options: BuildAppOptions = {}) {
   const apiToken = options.apiToken ?? process.env.PAN_PILOT_API_TOKEN ?? "";
   const logChatContent = options.logChatContent
     ?? isEnabled(process.env.PAN_PILOT_LOG_CHAT_CONTENT);
-  const chatAgent = new ChatAgent(modelClient);
+  // 只注册显式白名单内的只读工具；工具循环由 ChatAgent 统一驱动。
+  const toolRegistry = new ToolRegistry([calculatorTool, getCurrentTimeTool]);
+  const chatAgent = new ChatAgent(modelClient, toolRegistry);
 
   if (logChatContent) {
     // 启动时留下醒目标记，避免操作者无意间长期记录敏感对话。

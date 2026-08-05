@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ChatCompletion } from "openai/resources/chat/completions";
+import type {
+  ChatCompletion,
+  ChatCompletionChunk,
+} from "openai/resources/chat/completions";
 import {
   DeepSeekClient,
   type CreateChatCompletion,
@@ -150,6 +153,209 @@ describe("DeepSeekClient tool protocol", () => {
     await expect(client.complete({ messages: [], tools: [] }))
       .rejects.toThrow("Model returned neither content nor tool calls");
   });
+
+  it("rejects a streaming response for a non-streaming request", async () => {
+    const createCompletion = vi.fn<CreateChatCompletion>().mockResolvedValue(
+      streamOf([]),
+    );
+    const client = new DeepSeekClient({ createCompletion });
+
+    await expect(client.complete({ messages: [], tools: [] }))
+      .rejects.toThrow(
+        "Model client returned a streaming response for a non-streaming request",
+      );
+  });
+});
+
+describe("DeepSeekClient streaming", () => {
+  it("yields content deltas and a final completion with usage", async () => {
+    const createCompletion = vi.fn<CreateChatCompletion>().mockResolvedValue(
+      streamOf([
+        chunk({
+          choices: [{ delta: { content: "你" }, finish_reason: null, index: 0 }],
+        }),
+        chunk({
+          choices: [{ delta: { content: "好" }, finish_reason: null, index: 0 }],
+        }),
+        chunk({
+          choices: [],
+          usage: {
+            completion_tokens: 3,
+            prompt_tokens: 4,
+            total_tokens: 7,
+          },
+        }),
+      ]),
+    );
+    const client = new DeepSeekClient({
+      createCompletion,
+      model: "request-model",
+    });
+
+    const events: unknown[] = [];
+    for await (const event of client.completeStream({
+      messages: [{ role: "user", content: "你好" }],
+      tools: [],
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: "content", content: "你" },
+      { type: "content", content: "好" },
+      {
+        type: "completion",
+        completion: {
+          content: "你好",
+          toolCalls: [],
+          model: "response-model",
+          totalTokens: 7,
+        },
+      },
+    ]);
+    expect(createCompletion).toHaveBeenCalledWith({
+      model: "request-model",
+      messages: [{ role: "user", content: "你好" }],
+      stream: true,
+      stream_options: { include_usage: true },
+    }, undefined);
+  });
+
+  it("accumulates split tool call deltas across chunks", async () => {
+    const createCompletion = vi.fn<CreateChatCompletion>().mockResolvedValue(
+      streamOf([
+        chunk({
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call-calc",
+                function: { name: "calculator", arguments: "" },
+              }],
+            },
+            finish_reason: null,
+            index: 0,
+          }],
+        }),
+        chunk({
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                function: { arguments: "{\"operation\":\"a" },
+              }],
+            },
+            finish_reason: null,
+            index: 0,
+          }],
+        }),
+        chunk({
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                function: { arguments: "dd\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+            index: 0,
+          }],
+        }),
+      ]),
+    );
+    const client = new DeepSeekClient({ createCompletion });
+    const controller = new AbortController();
+
+    const events: unknown[] = [];
+    for await (const event of client.completeStream({
+      messages: [{ role: "user", content: "六加七" }],
+      tools: [{
+        name: "calculator",
+        description: "计算",
+        parameters: { type: "object", additionalProperties: false },
+      }],
+      signal: controller.signal,
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: "completion",
+        completion: {
+          content: "",
+          toolCalls: [{
+            id: "call-calc",
+            name: "calculator",
+            arguments: { operation: "add" },
+          }],
+          model: "response-model",
+        },
+      },
+    ]);
+    expect(createCompletion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stream: true,
+        stream_options: { include_usage: true },
+        tools: [{
+          type: "function",
+          function: {
+            name: "calculator",
+            description: "计算",
+            parameters: { type: "object", additionalProperties: false },
+          },
+        }],
+        tool_choice: "auto",
+      }),
+      { signal: controller.signal },
+    );
+  });
+
+  it("rejects malformed tool argument JSON in a stream", async () => {
+    const createCompletion = vi.fn<CreateChatCompletion>().mockResolvedValue(
+      streamOf([
+        chunk({
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call-bad",
+                function: { name: "calculator", arguments: "{bad json" },
+              }],
+            },
+            finish_reason: null,
+            index: 0,
+          }],
+        }),
+      ]),
+    );
+    const client = new DeepSeekClient({ createCompletion });
+
+    await expect(async () => {
+      for await (const _ of client.completeStream({
+        messages: [],
+        tools: [],
+      })) {
+        // 消费完整个流才会触发参数解析。
+      }
+    }).rejects.toThrow("Model returned invalid tool arguments JSON");
+  });
+
+  it("rejects a stream with neither text nor tool calls", async () => {
+    const createCompletion = vi.fn<CreateChatCompletion>().mockResolvedValue(
+      streamOf([]),
+    );
+    const client = new DeepSeekClient({ createCompletion });
+
+    await expect(async () => {
+      for await (const _ of client.completeStream({
+        messages: [],
+        tools: [],
+      })) {
+        // 空流不会有任何事件。
+      }
+    }).rejects.toThrow("Model returned neither content nor tool calls");
+  });
 });
 
 function completion(
@@ -177,4 +383,21 @@ function completion(
           },
         }),
   };
+}
+
+function chunk(overrides: Partial<ChatCompletionChunk> = {}): ChatCompletionChunk {
+  return {
+    id: "chatcmpl-test",
+    choices: [{ delta: { content: "" }, finish_reason: null, index: 0 }],
+    created: 0,
+    model: "response-model",
+    object: "chat.completion.chunk",
+    ...overrides,
+  };
+}
+
+async function* streamOf(
+  chunks: readonly ChatCompletionChunk[],
+): AsyncIterable<ChatCompletionChunk> {
+  for (const chunk of chunks) yield chunk;
 }
