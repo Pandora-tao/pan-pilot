@@ -10,6 +10,7 @@ RUN pnpm install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src ./src
 COPY test ./test
+COPY web ./web
 
 RUN pnpm typecheck && pnpm test && pnpm build
 RUN pnpm prune --prod
@@ -26,6 +27,7 @@ ENV PORT=3000
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/web ./web
 
 USER node
 

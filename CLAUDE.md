@@ -34,6 +34,8 @@ src/routes/      HTTP 适配层：校验、鉴权、状态码、日志，不含�
 src/agent/       应用层：ChatAgent 会话控制与工具循环
 src/model/       模型适配端口与实现
 src/tools/       工具定义、白名单注册、校验与执行
+src/docs/        docx 存储（DocStore）与读写/编辑引擎（word-editor）
+src/search/      搜索提供端口（SearchClient）与 Bing 实现
 ```
 
 核心契约是 `ModelClient` 接口（`src/model/model-client.ts`）：Agent 只认识这个接口，生产用 `DeepSeekClient`（OpenAI 兼容协议）实现，测试注入假实现。新增模型厂商 = 实现该接口，不需要改动上层。
@@ -45,6 +47,16 @@ src/tools/       工具定义、白名单注册、校验与执行
 - `/health` — 探活，不鉴权、不调模型
 - `/v1/capabilities` — 能力发现
 - `/v1/chat` — 聊天接口
+- `/v1/files` — multipart 上传 .docx；`GET /v1/files/:fileId` 下载（含修改版）
+
+Word 文档工具（`create_word_document` / `read_word_document` /
+`edit_word_document`）通过白名单注册表接入 Agent 循环：上传原件不可变，
+创建/编辑结果另存新文件并返回 `downloadUrl`；工具结果只含摘要
+（fileId/下载地址/每条编辑的 applied 状态），正文不进 HTTP。
+创建走 `docx` 包生成完整样式包（A4/页边距/styles.xml），支持标题、段落、
+项目符号和表格；编辑引擎仍只重写 `word/document.xml`，两种产物结构兼容。
+`web_search` 工具走 `SearchClient` 端口（默认 Bing 网页搜索，无 Key；
+`SEARCH_BASE_URL` 可覆盖），结果标题/链接/摘要回填模型。
 
 ## 关键约定
 
@@ -73,7 +85,7 @@ const response = await app.inject({ method: "POST", url: "/v1/chat", payload: { 
 
 ## 环境变量
 
-`DEEPSEEK_API_KEY` 必填（缺失时 `DeepSeekClient` 构造函数直接抛错）。`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`（默认 `deepseek-v4-flash`）、`DEEPSEEK_RESOLVED_ADDRESS`（只覆盖 DeepSeek 主机的 DNS 解析结果，URL 域名保留以维持 Host/TLS SNI/证书校验）、`PAN_PILOT_API_TOKEN`（/v1 路由 Bearer 鉴权，用 `timingSafeEqual` 常时比较）、`HOST`/`PORT`。完整清单见 `.env.example`；不要提交 `.env`。
+`DEEPSEEK_API_KEY` 必填（缺失时 `DeepSeekClient` 构造函数直接抛错）。`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`（默认 `deepseek-v4-flash`）、`DEEPSEEK_RESOLVED_ADDRESS`（只覆盖 DeepSeek 主机的 DNS 解析结果，URL 域名保留以维持 Host/TLS SNI/证书校验）、`PAN_PILOT_API_TOKEN`（/v1 路由 Bearer 鉴权，用 `timingSafeEqual` 常时比较）、`PAN_PILOT_DOCS_DIR`（docx 存储目录，默认 `./docs`）、`SEARCH_BASE_URL`（搜索端点，默认 Bing）、`HOST`/`PORT`。完整清单见 `.env.example`；不要提交 `.env`。
 
 ## 构建与部署
 

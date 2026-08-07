@@ -10,7 +10,9 @@ import type { ModelMessage } from "../model/model-client.js";
 // 兼容早期只有 `message` 字段的调用方；完整 `messages` 模式由调用方自行提供上下文。
 const legacySystemMessage: ModelMessage = {
   role: "system",
-  content: "你是 PanPilot，一个简洁、准确的 AI 助手。",
+  content:
+    "你是 PanPilot，一个简洁、准确的 AI 助手。"
+    + "当工具返回下载地址时，把完整的 /v1/files/xxx 地址写在回复末尾。",
 };
 
 // strict() 会拒绝未声明字段，避免拼写错误被静默忽略后仍然调用付费模型。

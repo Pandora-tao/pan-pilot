@@ -42,7 +42,9 @@ describe("POST /v1/chat", () => {
       messages: [
         {
           role: "system",
-          content: "你是 PanPilot，一个简洁、准确的 AI 助手。",
+          content:
+            "你是 PanPilot，一个简洁、准确的 AI 助手。"
+            + "当工具返回下载地址时，把完整的 /v1/files/xxx 地址写在回复末尾。",
         },
         {
           role: "user",
@@ -443,6 +445,7 @@ describe("POST /v1/chat", () => {
       capabilities: {
         chat: { status: "available", streaming: true },
         tools: { status: "available" },
+        search: { status: "available" },
         memory: { status: "reserved" },
         planning: { status: "reserved" },
       },

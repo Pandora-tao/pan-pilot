@@ -7,3 +7,5 @@ dist/
 coverage/
 *.log
 .DS_Store
+# 运行时 docx 存储目录（PAN_PILOT_DOCS_DIR 默认值），不提交生成文件
+docs/

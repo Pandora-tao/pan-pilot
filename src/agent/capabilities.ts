@@ -16,6 +16,14 @@ export const agentCapabilities = {
       // 工具白名单已接入 ChatAgent 循环，/v1/chat 会执行注册的工具。
       status: "available",
     },
+    files: {
+      // 支持上传 .docx、Agent 编辑后下载修改版文件。
+      status: "available",
+    },
+    search: {
+      // web_search 工具已接入工具循环（默认 Bing 网页搜索，无 Key）。
+      status: "available",
+    },
     memory: {
       status: "reserved",
     },
