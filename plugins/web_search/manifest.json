@@ -1,0 +1,16 @@
+{
+  "apiVersion": "v1",
+  "name": "web_search",
+  "description": "搜索互联网，返回网页标题、链接和内容摘要，用于获取实时信息或事实核查",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string", "minLength": 1, "maxLength": 300 },
+      "maxResults": { "type": "integer", "minimum": 1, "maximum": 10 }
+    },
+    "required": ["query"],
+    "additionalProperties": false
+  },
+  "executor": { "type": "builtin", "ref": "web_search" },
+  "enabled": true
+}

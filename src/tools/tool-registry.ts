@@ -50,6 +50,28 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool);
   }
 
+  /**
+   * 原子替换整个工具集合：先构造新集合并校验重复，全部合法才替换。
+   * 抛错时原集合保持不变，供插件重载保留旧注册表。
+   */
+  replaceAll(tools: readonly AnyAgentTool[]): void {
+    const next = new Map<string, AnyAgentTool>();
+    for (const tool of tools) {
+      if (next.has(tool.name)) {
+        throw new ToolRegistryError(
+          "DUPLICATE_TOOL",
+          tool.name,
+          `工具 ${tool.name} 已注册`,
+        );
+      }
+      next.set(tool.name, tool);
+    }
+    this.tools.clear();
+    for (const [name, tool] of next) {
+      this.tools.set(name, tool);
+    }
+  }
+
   get(name: string): AnyAgentTool | undefined {
     return this.tools.get(name);
   }

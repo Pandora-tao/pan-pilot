@@ -147,6 +147,28 @@
   .file-item .spacer { flex: 1; }
   #uploads-empty { color: var(--muted); font-size: 13px; margin-top: 10px; }
 
+  .plugin-item {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; margin-top: 10px;
+  }
+  .plugin-item .pname { font-weight: 600; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .plugin-item .pmeta { font-size: 12px; color: var(--muted); }
+  .plugin-item .perr { color: var(--err); font-size: 12px; flex: 1 1 100%; }
+  .badge.error { background: #fef2f2; color: var(--err); }
+  .badge.disabled { background: #eef0f4; color: var(--muted); }
+  .badge.loaded { background: #e8f7ee; color: var(--ok); }
+  #plugins-empty { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  .approval-create { display: flex; gap: 10px; align-items: flex-end; margin-top: 10px; }
+  .approval-create textarea {
+    flex: 1; min-height: 96px; resize: vertical;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
+  }
+  .approval-meta { font-size: 12px; color: var(--muted); flex: 1 1 100%; }
+  .badge.pending { background: #fef7e8; color: #b7791f; }
+  .badge.approved { background: #e8f0fe; color: #1a56db; }
+  .badge.rejected, .badge.expired { background: #fef2f2; color: var(--err); }
+  .badge.executed { background: #e8f7ee; color: var(--ok); }
+
   #toast {
     position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
     background: #1f2430; color: #fff; padding: 8px 16px; border-radius: 8px;
@@ -197,6 +219,35 @@
     </div>
     <div class="panel-body">
       <div class="caps" id="cap-grid"><span class="empty-tip" style="grid-column:1/-1">点击刷新获取 /v1/capabilities</span></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>工具插件</h2>
+      <span class="upload-note">白名单由 plugins/ 目录的 manifest 声明；重载/启停需要审批后执行，重载是原子操作</span>
+      <button class="small" id="refresh-plugins">刷新</button>
+      <button class="small primary" id="reload-plugins">重新加载</button>
+    </div>
+    <div class="panel-body">
+      <div id="plugins"></div>
+      <div id="plugins-empty">点击刷新获取 /v1/plugins</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>插件审批</h2>
+      <span class="upload-note">新建/重载/启停都先创建草案，人工批准后一次性执行（批准/执行必须携带动作哈希）；未配置 API Token 时审批执行接口不可用</span>
+      <button class="small" id="refresh-approvals">刷新</button>
+    </div>
+    <div class="panel-body">
+      <div class="approval-create">
+        <textarea id="manifest-input" rows="6" placeholder='粘贴声明式 manifest JSON（仅 builtin 引用或 HTTP JSON executor）&#10;例如：{"apiVersion":"v1","name":"weather","description":"查询天气","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"executor":{"type":"http","method":"GET","url":"https://api.example.com/weather?city=${city}"}}'></textarea>
+        <button class="small primary" id="create-plugin-draft">创建插件草案</button>
+      </div>
+      <div id="approvals"></div>
+      <div id="approvals-empty">暂无审批记录</div>
     </div>
   </section>
 
@@ -335,6 +386,7 @@ const CAP_META = {
   chat: "对话与 SSE 流式输出",
   tools: "白名单工具循环",
   files: "Word 文档上传 / 读取 / 编辑",
+  media: "图片 / 音频上传与多模态分析",
   search: "联网搜索（DuckDuckGo，无需 Key）",
   memory: "预留，尚未实现",
   planning: "预留，尚未实现",
@@ -379,6 +431,282 @@ async function refreshCapabilities() {
     tip.style.gridColumn = "1 / -1";
     tip.textContent = "无法连接服务，请检查服务地址与端口。";
     grid.appendChild(tip);
+  }
+}
+
+/* ---------- 工具插件 ---------- */
+const PLUGIN_STATE_TEXT = {
+  loaded: "已加载",
+  disabled: "已禁用",
+  error: "加载错误",
+};
+
+async function refreshPlugins() {
+  try {
+    const res = await apiFetch("/v1/plugins");
+    if (!res.ok) {
+      toast("获取插件状态失败：" + (await readError(res)));
+      return;
+    }
+    const data = await res.json();
+    renderPlugins(data.plugins || []);
+  } catch {
+    toast("无法连接服务，请检查服务地址与端口。");
+  }
+}
+
+function renderPlugins(plugins) {
+  const box = $("plugins");
+  box.textContent = "";
+  $("plugins-empty").hidden = plugins.length > 0;
+  for (const plugin of plugins) {
+    const row = document.createElement("div");
+    row.className = "plugin-item";
+
+    const name = document.createElement("span");
+    name.className = "pname";
+    name.textContent = plugin.name;
+
+    const badge = document.createElement("span");
+    badge.className = "badge " + plugin.state;
+    badge.textContent = PLUGIN_STATE_TEXT[plugin.state] || plugin.state;
+
+    const meta = document.createElement("span");
+    meta.className = "pmeta";
+    meta.textContent = [
+      plugin.toolNames.length ? "工具: " + plugin.toolNames.join(", ") : "未注册工具",
+      plugin.loadedAt ? "加载于 " + new Date(plugin.loadedAt).toLocaleString() : "",
+    ].filter(Boolean).join(" · ");
+
+    const spacer = document.createElement("span");
+    spacer.className = "spacer";
+
+    const toggle = document.createElement("button");
+    toggle.className = "small";
+    toggle.textContent = plugin.enabled ? "禁用" : "启用";
+    toggle.disabled = plugin.state === "error";
+    toggle.addEventListener("click", () => setPluginEnabled(plugin.name, !plugin.enabled));
+
+    row.append(name, badge, meta, spacer, toggle);
+    if (plugin.error) {
+      const err = document.createElement("div");
+      err.className = "perr";
+      err.textContent = plugin.error;
+      row.appendChild(err);
+    }
+    box.appendChild(row);
+  }
+}
+
+async function reloadPlugins() {
+  try {
+    const res = await apiFetch("/v1/plugins/reload", { method: "POST" });
+    if (!res.ok) {
+      toast("重载失败：" + (await readError(res)));
+      return;
+    }
+    const data = await res.json();
+    if (data.approval) {
+      await runApprovalFlow(data.approval, "重载全部插件");
+    } else {
+      renderPlugins(data.plugins || []);
+      toast(data.applied ? "插件已重新加载" : "重载被拒绝：存在错误插件，旧注册表已保留");
+    }
+  } catch {
+    toast("无法连接服务，请检查服务地址与端口。");
+  }
+}
+
+async function setPluginEnabled(name, enabled) {
+  try {
+    const res = await apiFetch(
+      "/v1/plugins/" + name + "/" + (enabled ? "enable" : "disable"),
+      { method: "POST" },
+    );
+    if (!res.ok) {
+      toast((await readError(res)) + "：" + name);
+      return;
+    }
+    const data = await res.json();
+    if (data.approval) {
+      await runApprovalFlow(data.approval, (enabled ? "启用" : "禁用") + "插件 " + name);
+    } else {
+      toast((enabled ? "已启用 " : "已禁用 ") + name);
+      refreshPlugins();
+    }
+  } catch {
+    toast("无法连接服务，请检查服务地址与端口。");
+  }
+}
+
+/* ---------- 插件审批 ---------- */
+const APPROVAL_STATUS_TEXT = {
+  pending: "待审批",
+  approved: "已批准",
+  rejected: "已拒绝",
+  executed: "已执行",
+  expired: "已过期",
+};
+
+async function refreshApprovals() {
+  try {
+    const res = await apiFetch("/v1/plugins/approvals");
+    if (!res.ok) {
+      toast("获取审批列表失败：" + (await readError(res)));
+      return;
+    }
+    const data = await res.json();
+    renderApprovals(data.approvals || []);
+  } catch {
+    toast("无法连接服务，请检查服务地址与端口。");
+  }
+}
+
+function renderApprovals(approvals) {
+  const box = $("approvals");
+  box.textContent = "";
+  $("approvals-empty").hidden = approvals.length > 0;
+  for (const approval of approvals) {
+    const row = document.createElement("div");
+    row.className = "plugin-item";
+
+    const name = document.createElement("span");
+    name.className = "pname";
+    name.textContent = approval.preview.summary;
+
+    const badge = document.createElement("span");
+    badge.className = "badge " + approval.status;
+    badge.textContent = APPROVAL_STATUS_TEXT[approval.status] || approval.status;
+
+    const meta = document.createElement("span");
+    meta.className = "pmeta";
+    meta.textContent = "到期 " + new Date(approval.expiresAt).toLocaleString()
+      + " · 哈希 " + approval.hash.slice(0, 10) + "…";
+
+    const spacer = document.createElement("span");
+    spacer.className = "spacer";
+
+    if (approval.status === "pending") {
+      const approveBtn = document.createElement("button");
+      approveBtn.className = "small primary";
+      approveBtn.textContent = "批准";
+      approveBtn.addEventListener("click", () => approveApproval(approval));
+      const rejectBtn = document.createElement("button");
+      rejectBtn.className = "small";
+      rejectBtn.textContent = "拒绝";
+      rejectBtn.addEventListener("click", () => rejectApproval(approval));
+      row.append(name, badge, meta, spacer, approveBtn, rejectBtn);
+    } else if (approval.status === "approved") {
+      const executeBtn = document.createElement("button");
+      executeBtn.className = "small primary";
+      executeBtn.textContent = "执行";
+      executeBtn.addEventListener("click", () => executeApproval(approval));
+      row.append(name, badge, meta, spacer, executeBtn);
+    } else {
+      row.append(name, badge, meta, spacer);
+    }
+
+    const detail = document.createElement("div");
+    detail.className = "approval-meta";
+    detail.textContent = "影响：" + (approval.preview.changes || []).join("；")
+      + " · 风险：" + approval.preview.riskSummary;
+    row.appendChild(detail);
+    box.appendChild(row);
+  }
+}
+
+/** 批准并执行一个已创建的审批草案（预览确认后自动完成两步）。 */
+async function runApprovalFlow(approval, title) {
+  const preview = approval.preview || {};
+  const ok = confirm(
+    title + "（需人工审批）\n\n"
+    + preview.summary + "\n\n影响：\n"
+    + (preview.changes || []).join("\n")
+    + "\n\n风险：\n" + preview.riskSummary,
+  );
+  if (!ok) {
+    toast("已取消审批");
+    return;
+  }
+  const approved = await approveApproval(approval);
+  if (approved) {
+    await executeApproval(approval);
+  }
+}
+
+async function approveApproval(approval) {
+  const res = await apiFetch(
+    "/v1/plugins/approvals/" + approval.id + "/approve",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hash: approval.hash }),
+    },
+  );
+  if (!res.ok) {
+    toast("批准失败：" + (await readError(res)));
+    return false;
+  }
+  toast("已批准，等待执行");
+  return true;
+}
+
+async function rejectApproval(approval) {
+  const res = await apiFetch(
+    "/v1/plugins/approvals/" + approval.id + "/reject",
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    toast("拒绝失败：" + (await readError(res)));
+    return;
+  }
+  toast("已拒绝");
+  refreshApprovals();
+}
+
+async function executeApproval(approval) {
+  const res = await apiFetch(
+    "/v1/plugins/approvals/" + approval.id + "/execute",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hash: approval.hash }),
+    },
+  );
+  if (!res.ok) {
+    toast("执行失败：" + (await readError(res)));
+    return;
+  }
+  const data = await res.json();
+  toast("审批动作已执行");
+  refreshApprovals();
+  refreshPlugins();
+}
+
+async function createPluginDraft() {
+  let manifest;
+  try {
+    manifest = JSON.parse($("manifest-input").value);
+  } catch {
+    toast("manifest 不是合法 JSON");
+    return;
+  }
+  try {
+    const res = await apiFetch("/v1/plugins/approvals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: { type: "create_plugin", manifest } }),
+    });
+    if (!res.ok) {
+      toast("创建草案失败：" + (await readError(res)));
+      return;
+    }
+    const data = await res.json();
+    $("manifest-input").value = "";
+    refreshApprovals();
+    await runApprovalFlow(data.approval, "创建插件");
+  } catch {
+    toast("无法连接服务，请检查服务地址与端口。");
   }
 }
 
@@ -811,6 +1139,10 @@ function syncSettingsUi() {
 }
 
 $("refresh-caps").addEventListener("click", refreshCapabilities);
+$("refresh-plugins").addEventListener("click", refreshPlugins);
+$("reload-plugins").addEventListener("click", reloadPlugins);
+$("refresh-approvals").addEventListener("click", refreshApprovals);
+$("create-plugin-draft").addEventListener("click", createPluginDraft);
 $("send-btn").addEventListener("click", sendMessage);
 $("stop-btn").addEventListener("click", stopChat);
 $("clear-chat").addEventListener("click", clearChat);
@@ -837,6 +1169,8 @@ loadSettings();
 syncSettingsUi();
 checkHealth();
 refreshCapabilities();
+refreshPlugins();
+refreshApprovals();
 setInterval(checkHealth, 15_000);
 </script>
 </body>

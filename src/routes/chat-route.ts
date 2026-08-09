@@ -5,6 +5,7 @@ import type {
 } from "fastify";
 import { z } from "zod";
 import type { ChatAgent } from "../agent/chat-agent.js";
+import { MEDIA_ID_PATTERN, type MediaStore } from "../media/media-store.js";
 import type { ModelMessage } from "../model/model-client.js";
 
 // 兼容早期只有 `message` 字段的调用方；完整 `messages` 模式由调用方自行提供上下文。
@@ -21,9 +22,16 @@ const modelMessageSchema = z.object({
   content: z.string().trim().min(1, "content 不能为空").max(100_000),
 }).strict();
 
+const chatAttachmentSchema = z.object({
+  // 附件只能引用受控 MediaStore 中的 mediaId，不接受文件路径或远程 URL。
+  mediaId: z.string().regex(MEDIA_ID_PATTERN, "mediaId 格式不正确"),
+  kind: z.enum(["image", "audio"]).optional(),
+}).strict();
+
 const chatRequestSchema = z.object({
   message: z.string().trim().min(1, "message 不能为空").max(10_000).optional(),
   messages: z.array(modelMessageSchema).min(1).max(100).optional(),
+  attachments: z.array(chatAttachmentSchema).max(10).optional(),
   stream: z.boolean().optional().default(false),
 }).strict().refine(
   // 简写 message 与完整 messages 是两种互斥的请求形式，必须且只能选择一种。
@@ -41,7 +49,7 @@ const chatRequestSchema = z.object({
 export function registerChatRoute(
   app: FastifyInstance,
   chatAgent: ChatAgent,
-  options: { logChatContent: boolean },
+  options: { logChatContent: boolean; mediaStore: MediaStore },
 ): void {
   app.post("/v1/chat", async (request, reply) => {
     const parsed = chatRequestSchema.safeParse(request.body);
@@ -55,10 +63,23 @@ export function registerChatRoute(
     }
 
     // 在进入 Agent 层前，把两种 HTTP 请求格式统一成消息数组。
-    const messages = parsed.data.messages ?? [
+    const baseMessages = parsed.data.messages ?? [
       legacySystemMessage,
       { role: "user" as const, content: parsed.data.message ?? "" },
     ];
+    const attachmentResolution = await resolveAttachments(
+      baseMessages,
+      parsed.data.attachments ?? [],
+      options.mediaStore,
+    );
+    if (attachmentResolution.errors.length > 0) {
+      return reply.code(400).send({
+        error: "INVALID_REQUEST",
+        message: "附件不正确",
+        details: attachmentResolution.errors,
+      });
+    }
+    const messages = attachmentResolution.messages;
     const startedAt = Date.now();
     if (options.logChatContent) {
       // 完整对话可能含隐私或密钥，因此只有显式开启时才记录内容。
@@ -108,6 +129,71 @@ export function registerChatRoute(
       });
     }
   });
+}
+
+interface AttachmentError {
+  mediaId: string;
+  reason: string;
+}
+
+/**
+ * 把 attachments 转成强制调用分析工具的 user 提示消息。
+ *
+ * 上传的媒体必须先存在（受控 mediaId），类型不符立即拒绝；提示消息只含
+ * mediaId，不携带媒体字节或 Base64，也不使用「需要时调用」的弱措辞——
+ * 必须明确要求：分析该附件之前先调用对应工具（图片 analyze_image；
+ * 音频按用户请求选择 transcribe_audio 或 analyze_audio）。
+ */
+async function resolveAttachments(
+  messages: readonly ModelMessage[],
+  attachments: readonly z.infer<typeof chatAttachmentSchema>[],
+  mediaStore: MediaStore,
+): Promise<{
+  messages: readonly ModelMessage[];
+  errors: readonly AttachmentError[];
+}> {
+  if (attachments.length === 0) return { messages, errors: [] };
+
+  const hints: ModelMessage[] = [];
+  const errors: AttachmentError[] = [];
+  for (const attachment of attachments) {
+    const media = await mediaStore.read(attachment.mediaId);
+    if (media === undefined) {
+      errors.push({ mediaId: attachment.mediaId, reason: "媒体不存在" });
+      continue;
+    }
+
+    const kind = attachment.kind ?? media.meta.kind;
+    if (kind !== media.meta.kind) {
+      errors.push({
+        mediaId: attachment.mediaId,
+        reason: `kind 与媒体实际类型（${media.meta.kind}）不符`,
+      });
+      continue;
+    }
+
+    hints.push(kind === "image"
+      ? {
+          role: "user",
+          content:
+            `[附件] 用户上传了一张图片（mediaId: ${attachment.mediaId}）。`
+            + "回答任何与这张图片相关的问题之前，你必须先调用"
+            + ` analyze_image 工具（mediaId: ${attachment.mediaId}）分析该附件，`
+            + "再基于分析结果作答。",
+        }
+      : {
+          role: "user",
+          content:
+            `[附件] 用户上传了一段音频（mediaId: ${attachment.mediaId}）。`
+            + "回答任何与这段音频相关的问题之前，你必须先调用音频工具分析该附件："
+            + `如果用户要求语音转写，调用 transcribe_audio（mediaId: ${attachment.mediaId}）；`
+            + `否则调用 analyze_audio（mediaId: ${attachment.mediaId}）转写并分析`
+            + "说话人、语气与背景声音。",
+        });
+  }
+
+  if (errors.length > 0) return { messages, errors };
+  return { messages: [...messages, ...hints], errors: [] };
 }
 
 /**

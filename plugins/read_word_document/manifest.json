@@ -1,0 +1,15 @@
+{
+  "apiVersion": "v1",
+  "name": "read_word_document",
+  "description": "读取已上传 Word 文档的正文文本（按段落返回），用于编辑前了解文档内容",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "fileId": { "type": "string", "pattern": "^[a-zA-Z0-9-]+$" }
+    },
+    "required": ["fileId"],
+    "additionalProperties": false
+  },
+  "executor": { "type": "builtin", "ref": "read_word_document" },
+  "enabled": true
+}

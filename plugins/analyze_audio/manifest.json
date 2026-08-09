@@ -1,0 +1,16 @@
+{
+  "apiVersion": "v1",
+  "name": "analyze_audio",
+  "description": "分析用户上传的音频（mediaId 来自 /v1/media 上传结果）：转写语音并描述说话人、语气与背景声音；不能用于任意文件路径或远程 URL",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "mediaId": { "type": "string", "pattern": "^[a-zA-Z0-9-]+$" },
+      "prompt": { "type": "string", "minLength": 1, "maxLength": 2000 }
+    },
+    "required": ["mediaId"],
+    "additionalProperties": false
+  },
+  "executor": { "type": "builtin", "ref": "analyze_audio" },
+  "enabled": true
+}

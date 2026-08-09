@@ -8,6 +8,7 @@ import {
   assertDocxStructure,
   isDocxMagic,
 } from "../docs/word-editor.js";
+import { attachmentHeader } from "./download-headers.js";
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -102,10 +103,4 @@ export function registerFilesRoute(app: FastifyInstance, store: DocStore): void 
       .header("content-length", file.buffer.length)
       .send(file.buffer);
   });
-}
-
-/** 中文文件名用 RFC 5987 filename* 传递，同时保留 ASCII fallback。 */
-function attachmentHeader(name: string): string {
-  const asciiFallback = name.replace(/[^\x20-\x7e]/g, "_");
-  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }

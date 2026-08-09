@@ -312,7 +312,11 @@ describe("files routes", () => {
   });
 
   function buildWithToken() {
-    const app = buildApp({ apiToken: "test-secret" });
+    const app = buildApp({
+      apiToken: "test-secret",
+      // 只测文件路由的用例不注入模型实现：替身保证测试不依赖 DEEPSEEK_API_KEY。
+      modelClient: { complete: vi.fn(), completeStream: vi.fn() } as ModelClient,
+    });
     apps.push(app);
     return app;
   }

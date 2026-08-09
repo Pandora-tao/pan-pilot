@@ -3,20 +3,41 @@ import multipart from "@fastify/multipart";
 import { timingSafeEqual } from "node:crypto";
 import { ChatAgent } from "./agent/chat-agent.js";
 import { DocStore } from "./docs/doc-store.js";
+import {
+  DEFAULT_MEDIA_MAX_BYTES,
+  MediaStore,
+} from "./media/media-store.js";
 import { DeepSeekClient } from "./model/deepseek-client.js";
 import type { ModelClient } from "./model/model-client.js";
+import type { MultimodalClient } from "./model/multimodal-client.js";
+import { VolcengineMultimodalClient } from "./model/volcengine-multimodal-client.js";
 import { registerCapabilitiesRoute } from "./routes/capabilities-route.js";
 import { registerChatRoute } from "./routes/chat-route.js";
 import { registerConsoleRoute } from "./routes/console-route.js";
 import { registerFilesRoute } from "./routes/files-route.js";
 import { registerHealthRoute } from "./routes/health-route.js";
+import { registerMediaRoute } from "./routes/media-route.js";
 import { BingSearchClient } from "./search/bing-search.js";
+import { InMemoryApprovalStore } from "./plugins/approval-store.js";
+import { PluginManager } from "./plugins/plugin-manager.js";
+import {
+  DEFAULT_APPROVAL_TTL_MS,
+  PluginApprovalService,
+} from "./plugins/plugin-approval-service.js";
+import { registerPluginRoutes } from "./plugins/plugin-routes.js";
+import { createAnalyzeAudioTool } from "./tools/analyze-audio.js";
+import { createAnalyzeImageTool } from "./tools/analyze-image.js";
 import { calculatorTool } from "./tools/calculator.js";
+import { createCreatePluginTool } from "./tools/create-plugin.js";
 import { createCreateWordDocumentTool } from "./tools/create-word-document.js";
 import { createEditWordDocumentTool } from "./tools/edit-word-document.js";
 import { getCurrentTimeTool } from "./tools/get-current-time.js";
+import { createListPluginsTool } from "./tools/list-plugins.js";
+import type { MultimodalClientProvider } from "./tools/media-common.js";
 import { createReadWordDocumentTool } from "./tools/read-word-document.js";
+import { createReloadPluginsTool } from "./tools/reload-plugins.js";
 import { ToolRegistry } from "./tools/tool-registry.js";
+import { createTranscribeAudioTool } from "./tools/transcribe-audio.js";
 import { createWebSearchTool } from "./tools/web-search.js";
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -36,6 +57,22 @@ export interface BuildAppOptions {
   apiToken?: string;
   logChatContent?: boolean;
   loggerInstance?: FastifyBaseLogger;
+  /** 插件目录，默认取 PAN_PILOT_PLUGINS_DIR 或 ./plugins。 */
+  pluginsDir?: string;
+  /** 逗号分隔的 http 插件 host 白名单，默认取 PAN_PILOT_PLUGIN_ALLOWED_HOSTS。 */
+  pluginAllowedHosts?: string;
+  /** 逗号分隔的允许 ${env:NAME} 引用的环境变量名白名单。 */
+  pluginAllowedEnvVars?: string;
+  /** 审批有效期（毫秒），默认取 PAN_PILOT_PLUGIN_APPROVAL_TTL_MINUTES 或 15 分钟。 */
+  pluginApprovalTtlMs?: number;
+  /** http 插件执行用的 fetch 实现，测试注入替身。 */
+  pluginFetchImpl?: typeof fetch;
+  /** 媒体存储目录，默认取 PAN_PILOT_MEDIA_DIR 或 ./media。 */
+  mediaDir?: string;
+  /** 媒体大小上限（字节），默认 10MB；供测试注入小上限。 */
+  mediaMaxBytes?: number;
+  /** 多模态客户端（图片/音频理解），测试注入假实现；默认懒加载火山方舟实现。 */
+  multimodalClient?: MultimodalClient;
 }
 
 /** 组装应用依赖并注册所有横切能力与路由，但不在这里监听端口。 */
@@ -48,15 +85,100 @@ export function buildApp(options: BuildAppOptions = {}) {
   const logChatContent = options.logChatContent
     ?? isEnabled(process.env.PAN_PILOT_LOG_CHAT_CONTENT);
   const docStore = new DocStore(process.env.PAN_PILOT_DOCS_DIR ?? "./docs");
-  // 只注册显式白名单内的工具；工具循环由 ChatAgent 统一驱动。
-  const toolRegistry = new ToolRegistry([
+  const mediaMaxBytes = options.mediaMaxBytes ?? DEFAULT_MEDIA_MAX_BYTES;
+  const mediaStore = new MediaStore(
+    options.mediaDir ?? process.env.PAN_PILOT_MEDIA_DIR ?? "./media",
+    { maxBytes: mediaMaxBytes },
+  );
+  // 测试注入的客户端直接复用；否则懒加载厂商实现，未配置密钥时服务仍可启动。
+  const injectedMultimodal = options.multimodalClient;
+  const multimodalProvider: MultimodalClientProvider = injectedMultimodal
+    === undefined
+    ? () => new VolcengineMultimodalClient()
+    : () => injectedMultimodal;
+  // 内置实现是插件框架的引用来源；白名单由 plugins/ 下的 manifest 声明。
+  const builtinTools = [
     calculatorTool,
     getCurrentTimeTool,
     createCreateWordDocumentTool(docStore),
     createReadWordDocumentTool(docStore),
     createEditWordDocumentTool(docStore),
     createWebSearchTool(new BingSearchClient()),
-  ]);
+    createAnalyzeImageTool(mediaStore, multimodalProvider),
+    createAnalyzeAudioTool(mediaStore, multimodalProvider),
+    createTranscribeAudioTool(mediaStore, multimodalProvider),
+  ];
+  const toolRegistry = new ToolRegistry();
+  const pluginsDir = options.pluginsDir
+    ?? process.env.PAN_PILOT_PLUGINS_DIR
+    ?? "./plugins";
+  const allowedHosts = parseHostList(
+    options.pluginAllowedHosts
+      ?? process.env.PAN_PILOT_PLUGIN_ALLOWED_HOSTS,
+  );
+  const allowedEnvVars = parseNameList(
+    options.pluginAllowedEnvVars
+      ?? process.env.PAN_PILOT_PLUGIN_ALLOWED_ENV_VARS,
+  );
+  // 管理工具通过闭包延迟引用管理器/审批服务，打破构造环；
+  // 工具执行发生在 buildApp 组装完成之后，引用必然已就位。
+  const managerRef: { current: PluginManager | undefined } = { current: undefined };
+  const serviceRef: { current: PluginApprovalService | undefined } = {
+    current: undefined,
+  };
+  // 内容内置工具 + 三个管理工具构成同一份完整 builtin 集合，
+  // PluginManager（装载/冲突检查）与 PluginApprovalService（草案构造检查）
+  // 使用完全一致的集合，避免 builtinNames/refs 在两个边界上漂移。
+  const allBuiltinTools = [
+    ...builtinTools,
+    createListPluginsTool(() => {
+      if (managerRef.current === undefined) {
+        throw new Error("插件管理器尚未就绪");
+      }
+      return managerRef.current;
+    }),
+    createCreatePluginTool(() => {
+      if (serviceRef.current === undefined) {
+        throw new Error("审批服务尚未就绪");
+      }
+      return serviceRef.current;
+    }),
+    createReloadPluginsTool(() => {
+      if (serviceRef.current === undefined) {
+        throw new Error("审批服务尚未就绪");
+      }
+      return serviceRef.current;
+    }),
+  ];
+  const pluginManager = new PluginManager({
+    pluginsDir,
+    builtinTools: allBuiltinTools,
+    registry: toolRegistry,
+    allowedHosts,
+    allowedEnvVars,
+    ...(options.pluginFetchImpl === undefined
+      ? {}
+      : { fetchImpl: options.pluginFetchImpl }),
+  });
+  const approvalService = new PluginApprovalService({
+    store: new InMemoryApprovalStore(),
+    manager: pluginManager,
+    builtinTools: allBuiltinTools,
+    allowedHosts,
+    allowedEnvVars,
+    ttlMs: options.pluginApprovalTtlMs
+      ?? parseApprovalTtlMinutes(process.env.PAN_PILOT_PLUGIN_APPROVAL_TTL_MINUTES),
+  });
+  managerRef.current = pluginManager;
+  serviceRef.current = approvalService;
+  for (const status of pluginManager.loadInitial()) {
+    if (status.state === "error") {
+      app.log.warn(
+        { event: "pan_pilot.plugins.load_error", plugin: status.name },
+        status.error,
+      );
+    }
+  }
   const chatAgent = new ChatAgent(modelClient, toolRegistry);
 
   if (logChatContent) {
@@ -101,13 +223,18 @@ export function buildApp(options: BuildAppOptions = {}) {
   registerHealthRoute(app);
   registerConsoleRoute(app);
   registerCapabilitiesRoute(app);
-  registerChatRoute(app, chatAgent, { logChatContent });
+  registerChatRoute(app, chatAgent, { logChatContent, mediaStore });
+  registerPluginRoutes(app, pluginManager, approvalService, {
+    // 未配置 API token 时，审批执行类接口 fail-closed，不能匿名批准/执行。
+    approvalAuthConfigured: apiToken !== "",
+  });
   // multipart 的 request.file() 是插件作用域装饰器，文件路由必须在插件子作用域内注册。
   app.register(async (scopedApp) => {
     await scopedApp.register(multipart, {
       limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
     });
     registerFilesRoute(scopedApp, docStore);
+    registerMediaRoute(scopedApp, mediaStore, mediaMaxBytes);
   });
 
   return app;
@@ -117,4 +244,25 @@ export function buildApp(options: BuildAppOptions = {}) {
 function isEnabled(value: string | undefined): boolean {
   return value !== undefined
     && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function parseHostList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((host) => host.trim())
+    .filter((host) => host.length > 0);
+}
+
+function parseNameList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+}
+
+function parseApprovalTtlMinutes(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_APPROVAL_TTL_MS;
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes) || minutes <= 0) return DEFAULT_APPROVAL_TTL_MS;
+  return Math.round(minutes * 60_000);
 }

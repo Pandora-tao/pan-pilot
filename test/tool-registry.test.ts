@@ -93,6 +93,35 @@ describe("ToolRegistry", () => {
       .rejects.toThrow("停止执行");
     expect(tool.execute).not.toHaveBeenCalled();
   });
+
+  it("replaceAll swaps the whole tool set atomically", async () => {
+    const registry = new ToolRegistry([createEchoTool()]);
+    const second = createEchoTool();
+    second.name = "echo2";
+
+    registry.replaceAll([second]);
+
+    expect(registry.listDefinitions().map((definition) => definition.name))
+      .toEqual(["echo2"]);
+    await expect(registry.execute("echo", { value: 1 }))
+      .rejects.toMatchObject({ code: "UNKNOWN_TOOL", toolName: "echo" });
+  });
+
+  it("replaceAll keeps the old set when the new set has duplicates", async () => {
+    const original = createEchoTool();
+    const registry = new ToolRegistry([original]);
+
+    expect(() => registry.replaceAll([createEchoTool(), createEchoTool()]))
+      .toThrow(expect.objectContaining({
+        code: "DUPLICATE_TOOL",
+        toolName: "echo",
+      }));
+
+    expect(registry.listDefinitions().map((definition) => definition.name))
+      .toEqual(["echo"]);
+    await expect(registry.execute("echo", { value: 1 }))
+      .resolves.toEqual({ value: 1 });
+  });
 });
 
 const echoInputSchema = z.object({ value: z.number() }).strict();

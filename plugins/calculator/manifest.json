@@ -1,0 +1,20 @@
+{
+  "apiVersion": "v1",
+  "name": "calculator",
+  "description": "对两个有限数字执行加、减、乘、除运算。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["add", "subtract", "multiply", "divide"]
+      },
+      "left": { "type": "number" },
+      "right": { "type": "number" }
+    },
+    "required": ["operation", "left", "right"],
+    "additionalProperties": false
+  },
+  "executor": { "type": "builtin", "ref": "calculator" },
+  "enabled": true
+}

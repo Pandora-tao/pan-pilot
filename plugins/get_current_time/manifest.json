@@ -1,0 +1,14 @@
+{
+  "apiVersion": "v1",
+  "name": "get_current_time",
+  "description": "获取指定 IANA 时区的当前日期和时间；未指定时区时使用 UTC。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "timeZone": { "type": "string", "minLength": 1, "maxLength": 100 }
+    },
+    "additionalProperties": false
+  },
+  "executor": { "type": "builtin", "ref": "get_current_time" },
+  "enabled": true
+}

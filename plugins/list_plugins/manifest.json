@@ -1,0 +1,12 @@
+{
+  "apiVersion": "v1",
+  "name": "list_plugins",
+  "description": "列出当前插件状态（只读，无需审批）",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "executor": { "type": "builtin", "ref": "list_plugins" },
+  "enabled": true
+}
