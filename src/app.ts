@@ -1,14 +1,17 @@
 import Fastify, { type FastifyBaseLogger } from "fastify";
 import multipart from "@fastify/multipart";
 import { timingSafeEqual } from "node:crypto";
-import { ChatAgent } from "./agent/chat-agent.js";
 import { DocStore } from "./docs/doc-store.js";
 import {
   DEFAULT_MEDIA_MAX_BYTES,
   MediaStore,
 } from "./media/media-store.js";
-import { DeepSeekClient } from "./model/deepseek-client.js";
 import type { ModelClient } from "./model/model-client.js";
+import {
+  ChatModelRegistry,
+  createChatModelRegistry,
+  createInjectedChatModelRegistry,
+} from "./model/model-registry.js";
 import type { MultimodalClient } from "./model/multimodal-client.js";
 import { VolcengineMultimodalClient } from "./model/volcengine-multimodal-client.js";
 import { registerCapabilitiesRoute } from "./routes/capabilities-route.js";
@@ -17,6 +20,7 @@ import { registerConsoleRoute } from "./routes/console-route.js";
 import { registerFilesRoute } from "./routes/files-route.js";
 import { registerHealthRoute } from "./routes/health-route.js";
 import { registerMediaRoute } from "./routes/media-route.js";
+import { registerModelsRoute } from "./routes/models-route.js";
 import { BingSearchClient } from "./search/bing-search.js";
 import { InMemoryApprovalStore } from "./plugins/approval-store.js";
 import { PluginManager } from "./plugins/plugin-manager.js";
@@ -54,6 +58,7 @@ const LOCAL_ORIGIN_PATTERN = /^(?:null|https?:\/\/(?:localhost|127\.0\.0\.1)(?::
  */
 export interface BuildAppOptions {
   modelClient?: ModelClient;
+  modelRegistry?: ChatModelRegistry;
   apiToken?: string;
   logChatContent?: boolean;
   loggerInstance?: FastifyBaseLogger;
@@ -71,6 +76,8 @@ export interface BuildAppOptions {
   mediaDir?: string;
   /** 媒体大小上限（字节），默认 10MB；供测试注入小上限。 */
   mediaMaxBytes?: number;
+  /** 媒体存储实例；测试注入可控替身（如删除失败替身），默认新建。 */
+  mediaStore?: MediaStore;
   /** 多模态客户端（图片/音频理解），测试注入假实现；默认懒加载火山方舟实现。 */
   multimodalClient?: MultimodalClient;
 }
@@ -80,16 +87,23 @@ export function buildApp(options: BuildAppOptions = {}) {
   const app = options.loggerInstance
     ? Fastify({ loggerInstance: options.loggerInstance })
     : Fastify({ logger: true });
-  const modelClient = options.modelClient ?? new DeepSeekClient();
+  if (options.modelClient !== undefined && options.modelRegistry !== undefined) {
+    throw new Error("modelClient and modelRegistry cannot both be provided");
+  }
+  const modelRegistry = options.modelRegistry
+    ?? (options.modelClient === undefined
+      ? createChatModelRegistry()
+      : createInjectedChatModelRegistry(options.modelClient));
   const apiToken = options.apiToken ?? process.env.PAN_PILOT_API_TOKEN ?? "";
   const logChatContent = options.logChatContent
     ?? isEnabled(process.env.PAN_PILOT_LOG_CHAT_CONTENT);
   const docStore = new DocStore(process.env.PAN_PILOT_DOCS_DIR ?? "./docs");
   const mediaMaxBytes = options.mediaMaxBytes ?? DEFAULT_MEDIA_MAX_BYTES;
-  const mediaStore = new MediaStore(
-    options.mediaDir ?? process.env.PAN_PILOT_MEDIA_DIR ?? "./media",
-    { maxBytes: mediaMaxBytes },
-  );
+  const mediaStore = options.mediaStore
+    ?? new MediaStore(
+        options.mediaDir ?? process.env.PAN_PILOT_MEDIA_DIR ?? "./media",
+        { maxBytes: mediaMaxBytes },
+      );
   // 测试注入的客户端直接复用；否则懒加载厂商实现，未配置密钥时服务仍可启动。
   const injectedMultimodal = options.multimodalClient;
   const multimodalProvider: MultimodalClientProvider = injectedMultimodal
@@ -179,8 +193,6 @@ export function buildApp(options: BuildAppOptions = {}) {
       );
     }
   }
-  const chatAgent = new ChatAgent(modelClient, toolRegistry);
-
   if (logChatContent) {
     // 启动时留下醒目标记，避免操作者无意间长期记录敏感对话。
     app.log.warn(
@@ -193,7 +205,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     const origin = request.headers.origin;
     if (origin !== undefined && LOCAL_ORIGIN_PATTERN.test(origin)) {
       reply.header("access-control-allow-origin", origin);
-      reply.header("access-control-allow-methods", "GET,POST,OPTIONS");
+      reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
       reply.header("access-control-allow-headers", "authorization, content-type, accept");
       reply.header("vary", "origin");
     }
@@ -223,7 +235,8 @@ export function buildApp(options: BuildAppOptions = {}) {
   registerHealthRoute(app);
   registerConsoleRoute(app);
   registerCapabilitiesRoute(app);
-  registerChatRoute(app, chatAgent, { logChatContent, mediaStore });
+  registerModelsRoute(app, modelRegistry);
+  registerChatRoute(app, modelRegistry, toolRegistry, { logChatContent, mediaStore });
   registerPluginRoutes(app, pluginManager, approvalService, {
     // 未配置 API token 时，审批执行类接口 fail-closed，不能匿名批准/执行。
     approvalAuthConfigured: apiToken !== "",

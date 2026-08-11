@@ -2,6 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyBaseLogger } from "fastify";
 import { buildApp } from "../src/app.js";
 import type { ModelClient } from "../src/model/model-client.js";
+import {
+  ChatModelRegistry,
+  DEFAULT_CHAT_MODEL_ID,
+  DEEPSEEK_OFFICIAL_V4_FLASH,
+  VOLCENGINE_DEEPSEEK_V4_FLASH,
+} from "../src/model/model-registry.js";
 
 /*
  * 这些测试通过 Fastify inject 在进程内走完整 HTTP 生命周期，
@@ -34,6 +40,7 @@ describe("POST /v1/chat", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       message: "你好",
+      modelId: DEFAULT_CHAT_MODEL_ID,
       model: "test-model",
       usage: { totalTokens: 12 },
       execution: { mode: "chat", toolExecutions: [] },
@@ -93,6 +100,82 @@ describe("POST /v1/chat", () => {
     });
   });
 
+  it("routes an explicit stable model id to the selected provider only", async () => {
+    const volcengineComplete = vi.fn<ModelClient["complete"]>();
+    const deepseekComplete = vi.fn<ModelClient["complete"]>()
+      .mockResolvedValueOnce({
+        content: "",
+        toolCalls: [{
+          id: "official-call",
+          name: "calculator",
+          arguments: { operation: "multiply", left: 2, right: 3 },
+        }],
+        model: "deepseek-v4-flash",
+      })
+      .mockResolvedValueOnce({
+        content: "官方线路回复：6",
+        toolCalls: [],
+        model: "deepseek-v4-flash",
+      });
+    const registry = dualRegistry(
+      fakeModelClient(volcengineComplete),
+      fakeModelClient(deepseekComplete),
+    );
+    const app = buildApp({ modelRegistry: registry });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/chat",
+      payload: {
+        message: "你好",
+        model: DEEPSEEK_OFFICIAL_V4_FLASH,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      message: "官方线路回复：6",
+      modelId: DEEPSEEK_OFFICIAL_V4_FLASH,
+      model: "deepseek-v4-flash",
+    });
+    expect(deepseekComplete).toHaveBeenCalledTimes(2);
+    expect(volcengineComplete).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown and unavailable model ids before calling any provider", async () => {
+    const availableComplete = vi.fn<ModelClient["complete"]>();
+    const registry = new ChatModelRegistry([
+      modelEntry(VOLCENGINE_DEEPSEEK_V4_FLASH, "volcengine", fakeModelClient(availableComplete)),
+      modelEntry(DEEPSEEK_OFFICIAL_V4_FLASH, "deepseek"),
+    ], VOLCENGINE_DEEPSEEK_V4_FLASH);
+    const app = buildApp({ modelRegistry: registry });
+    apps.push(app);
+
+    const unknown = await app.inject({
+      method: "POST",
+      url: "/v1/chat",
+      payload: { message: "你好", model: "unknown/model" },
+    });
+    const unavailable = await app.inject({
+      method: "POST",
+      url: "/v1/chat",
+      payload: { message: "你好", model: DEEPSEEK_OFFICIAL_V4_FLASH },
+    });
+
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.json()).toMatchObject({
+      error: "UNSUPPORTED_MODEL",
+      modelId: "unknown/model",
+    });
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.json()).toMatchObject({
+      error: "MODEL_UNAVAILABLE",
+      modelId: DEEPSEEK_OFFICIAL_V4_FLASH,
+    });
+    expect(availableComplete).not.toHaveBeenCalled();
+  });
+
   it("runs the tool loop and returns only sanitized execution summaries", async () => {
     const complete = vi.fn<ModelClient["complete"]>()
       .mockResolvedValueOnce({
@@ -123,6 +206,7 @@ describe("POST /v1/chat", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       message: "结果是 3",
+      modelId: DEFAULT_CHAT_MODEL_ID,
       model: "test-model",
       usage: { totalTokens: 15 },
       execution: {
@@ -183,6 +267,7 @@ describe("POST /v1/chat", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       message: "0 不能作为除数",
+      modelId: DEFAULT_CHAT_MODEL_ID,
       model: "test-model",
       usage: null,
       execution: {
@@ -321,6 +406,7 @@ describe("POST /v1/chat", () => {
         type: "done",
         result: {
           content: "你好",
+          modelId: DEFAULT_CHAT_MODEL_ID,
           model: "test-model",
           totalTokens: 7,
           steps: 1,
@@ -452,6 +538,42 @@ describe("POST /v1/chat", () => {
     });
   });
 
+  it("returns an authenticated and redacted model catalog", async () => {
+    const registry = dualRegistry(fakeModelClient(), fakeModelClient());
+    const app = buildApp({
+      modelRegistry: registry,
+      apiToken: "internal-secret",
+    });
+    apps.push(app);
+
+    const unauthorized = await app.inject({ method: "GET", url: "/v1/models" });
+    const authorized = await app.inject({
+      method: "GET",
+      url: "/v1/models",
+      headers: { authorization: "Bearer internal-secret" },
+    });
+
+    expect(unauthorized.statusCode).toBe(401);
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.json()).toEqual({
+      defaultModelId: VOLCENGINE_DEEPSEEK_V4_FLASH,
+      models: [
+        expect.objectContaining({
+          id: VOLCENGINE_DEEPSEEK_V4_FLASH,
+          provider: "volcengine",
+          status: "available",
+        }),
+        expect.objectContaining({
+          id: DEEPSEEK_OFFICIAL_V4_FLASH,
+          provider: "deepseek",
+          status: "available",
+        }),
+      ],
+    });
+    expect(authorized.body).not.toContain("secret");
+    expect(authorized.body).not.toContain("baseURL");
+  });
+
   it("rejects an empty message", async () => {
     const complete = vi.fn<ModelClient["complete"]>();
     const app = buildApp({ modelClient: fakeModelClient(complete) });
@@ -494,6 +616,31 @@ function fakeModelClient(
   completeStream: ModelClient["completeStream"] = vi.fn(),
 ): ModelClient {
   return { complete, completeStream };
+}
+
+function dualRegistry(volcengine: ModelClient, deepseek: ModelClient): ChatModelRegistry {
+  return new ChatModelRegistry([
+    modelEntry(VOLCENGINE_DEEPSEEK_V4_FLASH, "volcengine", volcengine),
+    modelEntry(DEEPSEEK_OFFICIAL_V4_FLASH, "deepseek", deepseek),
+  ], VOLCENGINE_DEEPSEEK_V4_FLASH);
+}
+
+function modelEntry(
+  id: string,
+  provider: "volcengine" | "deepseek",
+  client?: ModelClient,
+) {
+  return {
+    descriptor: {
+      id,
+      provider,
+      label: id,
+      upstreamModel: "deepseek-v4-flash",
+      status: client ? "available" as const : "unavailable" as const,
+      ...(client ? {} : { reason: "missing_api_key" as const }),
+    },
+    ...(client ? { client } : {}),
+  };
 }
 
 /** 把 SSE 响应体按 `data: {json}` 行解析为事件数组。 */

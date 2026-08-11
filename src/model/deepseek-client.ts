@@ -33,9 +33,30 @@ export type CreateChatCompletion = (
 export interface DeepSeekClientOptions {
   createCompletion?: CreateChatCompletion;
   model?: string;
+  apiKey?: string;
+  baseURL?: string;
+  resolvedAddress?: string;
 }
 
-/** 使用 OpenAI 兼容协议连接 DeepSeek，并把厂商响应转换为项目内部模型。 */
+type ChatProviderEnv = Readonly<Record<string, string | undefined>>;
+
+/**
+ * 方舟主对话与图片理解共用同一把 VOLCENGINE_API_KEY；非方舟地址继续使用
+ * DEEPSEEK_API_KEY，保留原有直连 DeepSeek 的兼容能力。
+ */
+export function resolveChatApiKey(
+  baseURL: string,
+  env: ChatProviderEnv = process.env,
+): string | undefined {
+  const hostname = new URL(baseURL).hostname.toLowerCase();
+  const isVolcengine = hostname === "volces.com"
+    || hostname.endsWith(".volces.com");
+  return isVolcengine
+    ? env.VOLCENGINE_API_KEY ?? env.DEEPSEEK_API_KEY
+    : env.DEEPSEEK_API_KEY;
+}
+
+/** 使用 OpenAI 兼容协议连接主对话模型，并把厂商响应转换为项目内部模型。 */
 export class DeepSeekClient implements ModelClient {
   private readonly createCompletion: CreateChatCompletion;
   private readonly model: string;
@@ -50,15 +71,20 @@ export class DeepSeekClient implements ModelClient {
       return;
     }
 
-    const apiKey = process.env.DEEPSEEK_API_KEY;
+    const baseURL = options.baseURL
+      ?? process.env.DEEPSEEK_BASE_URL
+      ?? "https://api.deepseek.com";
+    const apiKey = options.apiKey ?? resolveChatApiKey(baseURL);
 
     if (!apiKey) {
-      throw new Error("DEEPSEEK_API_KEY is required");
+      throw new Error(
+        "VOLCENGINE_API_KEY or DEEPSEEK_API_KEY is required for the chat provider",
+      );
     }
 
-    const baseURL = process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
     const apiHost = new URL(baseURL).hostname;
-    const resolvedAddress = process.env.DEEPSEEK_RESOLVED_ADDRESS?.trim();
+    const resolvedAddress = options.resolvedAddress
+      ?? process.env.DEEPSEEK_RESOLVED_ADDRESS?.trim();
 
     /*
      * 某些部署环境的 DNS 可能无法正确解析 DeepSeek。

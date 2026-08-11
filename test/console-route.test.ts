@@ -2,10 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import type { ModelClient } from "../src/model/model-client.js";
 
-/*
- * 控制台页面是纯静态 HTML，测试只验证路由可达且由服务端同源提供；
- * 页面内的 fetch 调用走 /v1/*，由其他路由测试覆盖。
- */
+/* Vite 控制台由服务端同源托管，业务 API 仍由其他路由测试覆盖。 */
 describe("console page", () => {
   const apps: ReturnType<typeof buildApp>[] = [];
 
@@ -35,8 +32,23 @@ describe("console page", () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers["content-type"]).toContain("text/html");
       expect(response.body).toContain("PanPilot 控制台");
-      expect(response.body).toContain("/v1/capabilities");
+      expect(response.body).toContain("/console/assets/");
       expect(response.body).toContain("</html>");
+    }
+  });
+
+  it("serves hashed Vite assets with immutable caching", async () => {
+    const app = buildAppWithFakeModel();
+    const page = await app.inject({ method: "GET", url: "/console" });
+    const assetUrls = [...page.body.matchAll(/(?:src|href)="(\/console\/assets\/[^"]+)"/g)]
+      .map((match) => match[1]!);
+
+    expect(assetUrls.length).toBeGreaterThanOrEqual(2);
+    for (const url of assetUrls) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["cache-control"]).toContain("immutable");
+      expect(response.headers["content-type"]).toMatch(/javascript|css/);
     }
   });
 
@@ -75,19 +87,18 @@ describe("console page", () => {
     expect(evilSite.headers["access-control-allow-origin"]).toBeUndefined();
   });
 
-  it("references only element ids that exist in the page", async () => {
+  it("does not expose source modules or allow asset path traversal", async () => {
     const app = buildAppWithFakeModel();
-    const response = await app.inject({ method: "GET", url: "/console" });
-    const html = response.body;
+    const source = await app.inject({
+      method: "GET",
+      url: "/console/src/main.tsx",
+    });
+    expect(source.statusCode).toBe(404);
 
-    const usedIds = [...html.matchAll(/\$\("([^"]+)"\)/g)].map((match) => match[1]);
-    const definedIds = new Set(
-      [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]),
-    );
-
-    expect(usedIds.length).toBeGreaterThan(10);
-    for (const id of usedIds) {
-      expect(definedIds.has(id), `页面 JS 引用了不存在的 id="${id}"`).toBe(true);
-    }
+    const traversal = await app.inject({
+      method: "GET",
+      url: "/console/%2e%2e/package.json",
+    });
+    expect([400, 404]).toContain(traversal.statusCode);
   });
 });

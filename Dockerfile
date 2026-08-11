@@ -13,7 +13,7 @@ COPY plugins ./plugins
 COPY test ./test
 COPY web ./web
 
-RUN pnpm typecheck && pnpm test && pnpm build
+RUN pnpm typecheck && pnpm test && pnpm build:server
 RUN pnpm prune --prod
 
 
@@ -29,7 +29,7 @@ COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/plugins ./plugins
-COPY --from=build /app/web ./web
+COPY --from=build /app/web/dist ./web/dist
 
 USER node
 

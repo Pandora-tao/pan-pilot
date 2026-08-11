@@ -24,6 +24,7 @@ src/
 └── plugins/       # 插件框架：manifest 校验、加载器、http 执行器、生命周期管理
 plugins/           # 声明式插件目录：每个工具一个 manifest.json
 test/              # Vitest 测试
+web/               # React + TypeScript + Vite 控制台，构建产物输出到 web/dist
 ```
 
 ## 开始使用
@@ -38,14 +39,30 @@ pnpm dev
 
 - `GET /health` — 探活；不鉴权、不调用模型。
 - `GET /v1/capabilities` — 能力发现，返回当前可用/预留的能力状态。
+- `GET /v1/models` — 返回脱敏的聊天模型目录、可用状态和默认模型 ID。
 - `POST /v1/chat` — 聊天接口，支持非流式与 SSE 流式两种响应。
 - `POST /v1/media` — multipart 上传图片（png/jpg/jpeg/webp/gif）或音频
   （mp3/wav），返回受控 `mediaId`。
 - `GET /v1/media/:mediaId` — 下载原始媒体，需要与 `/v1/chat` 相同的 Bearer 鉴权。
+- `DELETE /v1/media/:mediaId` — 删除受控媒体（媒体文件与元数据边车），
+  需要相同的 Bearer 鉴权；成功返回 `200 { deleted: true, mediaId }`，
+  不存在返回 `404 MEDIA_NOT_FOUND`，非法 mediaId 返回 `400 INVALID_REQUEST`，
+  底层删除失败（如 EACCES/EPERM/EIO）返回 `500 MEDIA_DELETE_FAILED`（通用
+  错误，不泄露路径/内部细节，绝不谎报删除成功）。供调用方在会话删除/事务
+  回滚时联动清理；当前没有定时对账/TTL 自动清理。
 
 配置了 `PAN_PILOT_API_TOKEN` 后，`/v1/*` 要求请求头
 `Authorization: Bearer <token>`（恒定时间比较）；未配置时 `/v1/*` 开放访问。
 `/health` 始终公开。
+
+### 出站代理（多模态调用）
+
+图片/音频理解走火山方舟 OpenAI 兼容端点；进程存在
+`http_proxy`/`HTTP_PROXY`/`https_proxy`/`HTTPS_PROXY` 任一环境变量时，
+SDK 传输自动经 undici `EnvHttpProxyAgent` 走代理，并遵循
+`no_proxy`/`NO_PROXY`（大小写不敏感）；无代理环境保持直连。代理值、
+API Key 等凭据不会写入日志。部署在需要代理出网的服务器（如隔离测试
+环境）时，请为该服务进程配置上述代理环境变量。
 
 健康检查：
 
@@ -53,18 +70,19 @@ pnpm dev
 curl http://127.0.0.1:3000/health
 ```
 
-网页控制台（单 HTML 文件）：
+网页控制台：
 
 ```bash
 open http://127.0.0.1:3000/console
 ```
 
-页面覆盖三类能力：能力状态（`/v1/capabilities`）、对话（`/v1/chat`，支持 SSE
-流式与停止）、Word 文档（`/v1/files` 上传/下载，fileId 可一键填入聊天框）。
+控制台采用 React + TypeScript + Vite，包含对话、文件与媒体、插件、审批和能力
+五个工作区；支持按供应商切换聊天模型、SSE 流式停止、媒体附件、Word 文档、
+插件生命周期和审批预览。模型选择保存在同一份浏览器 localStorage 状态中。
 连接地址与 Bearer Token 保存在浏览器 localStorage；服务端未配置
-`PAN_PILOT_API_TOKEN` 时留空即可。页面代码在 `web/console.html`，无外部依赖。
-也可以直接双击打开该文件（file://）：服务端仅对 file:// 与 localhost 来源放行
-CORS，其他网页来源不会拿到跨域权限。
+`PAN_PILOT_API_TOKEN` 时留空即可。源码位于 `web/src`，`pnpm build:web`
+生成 `web/dist`，由 Fastify 同源托管；开发时 `pnpm dev` 会同时启动后端和
+Vite 前端服务。
 
 能力声明：
 
@@ -80,10 +98,16 @@ curl -H "Authorization: Bearer $PAN_PILOT_API_TOKEN" \
 curl -X POST http://127.0.0.1:3000/v1/chat \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $PAN_PILOT_API_TOKEN" \
-  --data '{"messages":[{"role":"user","content":"你好"}],"stream":false}'
+  --data '{"model":"volcengine/deepseek-v4-flash","messages":[{"role":"user","content":"你好"}],"stream":false}'
 ```
 
-非流式响应返回 `message`（最终正文）、`model`、`usage` 和
+`model` 可省略；省略时使用 `PAN_PILOT_DEFAULT_MODEL_ID`。当前稳定 ID 为
+`volcengine/deepseek-v4-flash` 与 `deepseek/deepseek-v4-flash`。未知 ID 返回
+400 `UNSUPPORTED_MODEL`，缺少对应供应商密钥返回 503 `MODEL_UNAVAILABLE`，
+不会自动回退到另一条线路。
+
+非流式响应返回 `message`（最终正文）、`modelId`（稳定选择 ID）、`model`
+（厂商实际版本）、`usage` 和
 `execution.toolExecutions`（工具执行摘要）。旧的 `{"message":"你好"}` 请求
 仍然兼容。请求参数错误返回 400 `INVALID_REQUEST`；非流式调用失败返回 502
 `CHAT_FAILED`，内部细节只进服务端日志。
@@ -101,7 +125,7 @@ curl -X POST http://127.0.0.1:3000/v1/chat \
 - `{"type":"content","content":"文本增量"}`：模型正文逐段生成。
 - `{"type":"tool_execution","execution":{"id","name","status"}}`：单次工具执行摘要。
 - `{"type":"done","result":{...}}`：整轮结束，携带与 `chat()` 相同的最终结果
-  （content、model、totalTokens、steps、toolExecutions）。
+  （content、modelId、model、totalTokens、steps、toolExecutions）。
 - `{"type":"error","error":"CHAT_FAILED","message":"Agent 调用失败"}`：流建立后
   发生的失败；客户端断开时流直接终止，不再发送事件。
 
@@ -112,9 +136,13 @@ curl -X POST http://127.0.0.1:3000/v1/chat \
 
 完整清单见 `.env.example`，要点：
 
-- `DEEPSEEK_API_KEY`：必填，缺失时 `DeepSeekClient` 构造直接抛错。
-- `DEEPSEEK_MODEL` / `DEEPSEEK_BASE_URL`：模型与端点，默认
-  `deepseek-v4-flash` / `https://api.deepseek.com`。
+- `PAN_PILOT_DEFAULT_MODEL_ID`：省略请求 `model` 时使用的稳定模型 ID，默认
+  `volcengine/deepseek-v4-flash`；默认项缺少密钥时服务拒绝启动。
+- `VOLCENGINE_API_KEY` / `VOLCENGINE_BASE_URL`：火山方舟聊天与图片理解共用的
+  密钥和 Coding Plan 端点。
+- `VOLCENGINE_CHAT_RESOLVED_ADDRESS`：只覆盖火山主对话域名的 DNS 结果。
+- `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL`：DeepSeek 官方线路的密钥与端点；
+  缺少密钥时该线路仍出现在模型目录中，但状态为 unavailable。
 - `DEEPSEEK_RESOLVED_ADDRESS`：部署环境的系统 DNS 把 DeepSeek 解析到不可达
   地址时，可只为 PanPilot 覆盖该主机的 DNS 结果；不修改全局 DNS，URL 中的
   域名保留以维持 Host/TLS SNI/证书校验。
@@ -321,7 +349,7 @@ pnpm build
 pnpm start
 ```
 
-编译结果输出到 `dist/`。生产环境通过环境变量注入 API Key，不要将 `.env` 或
+服务端编译结果输出到 `dist/`，控制台输出到 `web/dist/`。生产环境通过环境变量注入 API Key，不要将 `.env` 或
 密钥提交到仓库。`Dockerfile` 使用多阶段构建：build 阶段执行 typecheck + test +
 build；bundle 阶段导出「应用目录 + Linux Node 二进制」的自包含产物，供不装
 全局 Node 的 systemd 主机直接运行。

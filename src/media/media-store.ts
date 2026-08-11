@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
@@ -30,16 +30,20 @@ export type MediaStoreErrorCode =
   | "INVALID_MEDIA_ID"
   | "MEDIA_TOO_LARGE"
   | "UNSUPPORTED_EXTENSION"
-  | "INVALID_MEDIA";
+  | "INVALID_MEDIA"
+  | "MEDIA_DELETE_FAILED";
 
 /** 媒体存储的稳定错误码，路由据此映射 HTTP 状态码。 */
 export class MediaStoreError extends Error {
   readonly code: MediaStoreErrorCode;
+  /** 底层原因（如 EACCES/EPERM/EIO），仅服务端日志使用，不回传 HTTP。 */
+  readonly cause: Error | undefined;
 
-  constructor(code: MediaStoreErrorCode, message: string) {
+  constructor(code: MediaStoreErrorCode, message: string, cause?: Error) {
     super(message);
     this.name = "MediaStoreError";
     this.code = code;
+    this.cause = cause;
   }
 }
 
@@ -95,6 +99,10 @@ const storedMediaMetaSchema = z.object({
 
 export interface MediaStoreOptions {
   maxBytes?: number;
+  /** 删除文件实现（默认 node:fs/promises rm，force 模式幂等）；测试注入替身。 */
+  deleteFileImpl?: (filePath: string) => Promise<void>;
+  /** 列出媒体目录实现（默认 readdir）；测试注入替身。 */
+  readDirImpl?: (dirPath: string) => Promise<string[]>;
 }
 
 interface DetectedMedia {
@@ -114,12 +122,17 @@ const MP3_ID3_MAGIC = Buffer.from([0x49, 0x44, 0x33]);
  */
 export class MediaStore {
   private readonly maxBytes: number;
+  private readonly deleteFileImpl: (filePath: string) => Promise<void>;
+  private readonly readDirImpl: (dirPath: string) => Promise<string[]>;
 
   constructor(
     private readonly rootDir: string,
     options: MediaStoreOptions = {},
   ) {
     this.maxBytes = options.maxBytes ?? DEFAULT_MEDIA_MAX_BYTES;
+    this.deleteFileImpl = options.deleteFileImpl
+      ?? ((filePath) => rm(filePath, { force: true }));
+    this.readDirImpl = options.readDirImpl ?? readdir;
   }
 
   /** 校验并落盘；文件名只取 basename，扩展名必须与魔数检测结果一致。 */
@@ -212,6 +225,68 @@ export class MediaStore {
     return { mediaId, meta, buffer };
   }
 
+  /**
+   * 删除受控媒体（媒体文件 + 元数据边车），供 DELETE /v1/media/:mediaId 与
+   * 外部调用方清理副本使用。
+   *
+   * - mediaId 必须先通过白名单（路径穿越被双重防御）；
+   * - 边车缺失/损坏或媒体文件缺失（部分文件状态）时，尽力删除所有存在部分；
+   * - 不存在任何相关文件时返回 false，其余情况返回 true。
+   */
+  async delete(mediaId: string): Promise<boolean> {
+    if (!MEDIA_ID_PATTERN.test(mediaId)) return false;
+    const mediaDir = this.mediaDir();
+    let entries: string[];
+    try {
+      entries = await this.readDirImpl(mediaDir);
+    } catch (error) {
+      // 目录不存在（ENOENT）视为无可删内容，幂等返回 false；
+      // 其他读取失败（EACCES/EPERM/EIO 等）是真实故障，必须抛出而不是谎报成功。
+      if (!isMissingError(error)) {
+        throw new MediaStoreError(
+          "MEDIA_DELETE_FAILED",
+          "媒体删除失败",
+          error instanceof Error ? error : undefined,
+        );
+      }
+      return false;
+    }
+
+    const prefix = `${mediaId}.`;
+    const targets: string[] = [];
+    for (const entry of entries) {
+      if (entry === `${mediaId}.json`) {
+        targets.push(entry);
+        continue;
+      }
+      // 只匹配「白名单 mediaId + 白名单扩展名」的文件，无法逃逸 media 目录。
+      const extension = entry.startsWith(prefix)
+        ? entry.slice(prefix.length)
+        : "";
+      if (EXTENSION_TO_TYPE[extension] !== undefined) {
+        targets.push(entry);
+      }
+    }
+    if (targets.length === 0) return false;
+
+    try {
+      // 默认实现 force: true 已把「文件已不存在」视为成功（幂等）；
+      // EACCES/EPERM/EIO 等真实删除失败必须向上抛出，绝不吞掉。
+      await Promise.all(
+        targets.map((entry) =>
+          this.deleteFileImpl(path.join(mediaDir, entry)),
+        ),
+      );
+    } catch (error) {
+      throw new MediaStoreError(
+        "MEDIA_DELETE_FAILED",
+        "媒体删除失败",
+        error instanceof Error ? error : undefined,
+      );
+    }
+    return true;
+  }
+
   private mediaDir(): string {
     const resolvedRoot = path.resolve(this.rootDir);
     const dir = path.join(resolvedRoot, "media");
@@ -237,6 +312,15 @@ export class MediaStore {
       writeFile(path.join(mediaDir, `${mediaId}.json`), JSON.stringify(meta)),
     ]);
   }
+}
+
+/** 判断 fs 错误是否为「文件/目录不存在」（幂等可接受情形）。 */
+function isMissingError(error: unknown): boolean {
+  return (
+    typeof error === "object"
+    && error !== null
+    && (error as { code?: unknown }).code === "ENOENT"
+  );
 }
 
 /** 魔数识别受支持媒体；不信任扩展名或客户端声明的 MIME。 */

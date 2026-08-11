@@ -4,6 +4,7 @@ import type {
   ChatCompletionCreateParamsNonStreaming,
   ChatCompletionMessageParam,
 } from "openai/resources/chat/completions";
+import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici";
 import type {
   MultimodalAnalysis,
   MultimodalClient,
@@ -19,6 +20,15 @@ export type CreateMultimodalCompletion = (
   options?: { signal?: AbortSignal },
 ) => PromiseLike<ChatCompletion>;
 
+/**
+ * 与 OpenAI SDK ClientOptions.fetch 结构兼容的传输函数。
+ * init 额外携带 undici dispatcher（代理场景由 EnvHttpProxyAgent 提供）。
+ */
+export type MultimodalFetch = (
+  input: string | URL | Request,
+  init?: RequestInit & { dispatcher?: unknown },
+) => Promise<Response>;
+
 export interface VolcengineMultimodalClientOptions {
   /** 图片通道测试传输；保留原名以兼容已有注入代码。 */
   createCompletion?: CreateMultimodalCompletion;
@@ -28,6 +38,54 @@ export interface VolcengineMultimodalClientOptions {
   baseUrl?: string;
   audioModel?: string;
   audioBaseUrl?: string;
+  /** 测试注入的传输实现；默认 undici fetch（代理环境自动 EnvHttpProxyAgent）。 */
+  fetchImpl?: MultimodalFetch | undefined;
+}
+
+export interface MultimodalTransport {
+  /** 是否启用代理传输（仅布尔值，可安全记录；代理值/密钥绝不落日志）。 */
+  proxyEnabled: boolean;
+  /** 代理 fetch 包装器；无代理环境为 undefined，保持 SDK 默认直连。 */
+  fetch: MultimodalFetch | undefined;
+}
+
+/**
+ * 依据标准代理环境变量决定传输配置：
+ * - 存在 http_proxy/HTTP_PROXY/https_proxy/HTTPS_PROXY 之一时，用 undici
+ *   EnvHttpProxyAgent 包裹 fetch，让 OpenAI SDK 遵循上述变量以及
+ *   no_proxy/NO_PROXY（EnvHttpProxyAgent 内部处理，大小写不敏感）；
+ * - 无代理环境返回空配置（现有直连行为不变）。
+ */
+export function buildMultimodalTransport(
+  options: { fetchImpl?: MultimodalFetch | undefined } = {},
+): MultimodalTransport {
+  if (!hasProxyEnv()) {
+    return { proxyEnabled: false, fetch: undefined };
+  }
+  // undici 的 fetch 是完整实现但其 Response 类型与 DOM 类型结构不等价，
+  // 经 unknown 窄化到本模块的传输签名（运行时行为不变）。
+  const fetchImpl = options.fetchImpl
+    ?? (undiciFetch as unknown as MultimodalFetch);
+  const proxyAgent = new EnvHttpProxyAgent();
+  return {
+    proxyEnabled: true,
+    fetch: (input, init) =>
+      fetchImpl(input, { ...(init ?? {}), dispatcher: proxyAgent }),
+  };
+}
+
+const PROXY_ENV_NAMES = [
+  "HTTP_PROXY",
+  "http_proxy",
+  "HTTPS_PROXY",
+  "https_proxy",
+] as const;
+
+function hasProxyEnv(): boolean {
+  return PROXY_ENV_NAMES.some((name) => {
+    const value = process.env[name];
+    return value !== undefined && value.trim() !== "";
+  });
 }
 
 const DEFAULT_IMAGE_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
@@ -64,6 +122,9 @@ export class VolcengineMultimodalClient implements MultimodalClient {
     if ((!injectedImage || !injectedAudio) && !apiKey) {
       throw new Error("VOLCENGINE_API_KEY is required");
     }
+    const transport = buildMultimodalTransport({
+      fetchImpl: options.fetchImpl,
+    });
 
     if (injectedImage) {
       this.createImageCompletion = injectedImage;
@@ -73,6 +134,9 @@ export class VolcengineMultimodalClient implements MultimodalClient {
         baseURL: options.baseUrl
           ?? process.env.VOLCENGINE_BASE_URL
           ?? DEFAULT_IMAGE_BASE_URL,
+        ...(transport.fetch === undefined
+          ? {}
+          : { fetch: transport.fetch }),
       });
       this.createImageCompletion = (body, requestOptions) =>
         imageClient.chat.completions.create(body, requestOptions);
@@ -86,6 +150,9 @@ export class VolcengineMultimodalClient implements MultimodalClient {
         baseURL: options.audioBaseUrl
           ?? process.env.VOLCENGINE_AUDIO_BASE_URL
           ?? DEFAULT_AUDIO_BASE_URL,
+        ...(transport.fetch === undefined
+          ? {}
+          : { fetch: transport.fetch }),
       });
       this.createAudioCompletion = (body, requestOptions) =>
         audioClient.chat.completions.create(body, requestOptions);

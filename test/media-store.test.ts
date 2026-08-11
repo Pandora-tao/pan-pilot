@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -184,5 +184,114 @@ describe("MediaStore sidecar strictness", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("MediaStore delete lifecycle", () => {
+  let root = "";
+  let store: MediaStore;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), "panpilot-media-delete-"));
+    store = new MediaStore(root);
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("deletes the media file and sidecar, then reports not found", async () => {
+    const saved = await store.save(pngBytes(), "a.png");
+    const mediaPath = path.join(root, "media", `${saved.mediaId}.png`);
+    const sidecar = path.join(root, "media", `${saved.mediaId}.json`);
+    expect(await store.read(saved.mediaId)).toBeDefined();
+
+    await expect(store.delete(saved.mediaId)).resolves.toBe(true);
+
+    await expect(readFile(mediaPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(sidecar)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(store.read(saved.mediaId)).resolves.toBeUndefined();
+    await expect(store.delete(saved.mediaId)).resolves.toBe(false);
+  });
+
+  it("returns false for nonexistent and unsafe media ids", async () => {
+    await expect(store.delete("does-not-exist")).resolves.toBe(false);
+    await expect(store.delete("../secret")).resolves.toBe(false);
+    await expect(store.delete("a/b")).resolves.toBe(false);
+    await expect(store.delete("..%2Fsecret")).resolves.toBe(false);
+    await expect(store.delete("")).resolves.toBe(false);
+  });
+
+  it("cleans up a partial state where the sidecar is missing", async () => {
+    const saved = await store.save(pngBytes(), "a.png");
+    const mediaPath = path.join(root, "media", `${saved.mediaId}.png`);
+    await rm(path.join(root, "media", `${saved.mediaId}.json`), { force: true });
+
+    await expect(store.delete(saved.mediaId)).resolves.toBe(true);
+
+    await expect(readFile(mediaPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("cleans up a partial state where the media file is missing", async () => {
+    const saved = await store.save(pngBytes(), "a.png");
+    const sidecar = path.join(root, "media", `${saved.mediaId}.json`);
+    await rm(path.join(root, "media", `${saved.mediaId}.png`), { force: true });
+
+    await expect(store.delete(saved.mediaId)).resolves.toBe(true);
+
+    await expect(readFile(sidecar)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes a tampered sidecar and whitelisted media files", async () => {
+    const saved = await store.save(pngBytes(), "a.png");
+    // 边车损坏（read 视为不存在）时，delete 仍应尽力清理所有痕迹。
+    await writeFile(
+      path.join(root, "media", `${saved.mediaId}.json`),
+      "{ 不是 JSON",
+      "utf8",
+    );
+
+    await expect(store.delete(saved.mediaId)).resolves.toBe(true);
+
+    const entries = await readdir(path.join(root, "media"));
+    expect(entries.filter((entry) => entry.startsWith(saved.mediaId))).toEqual([]);
+  });
+
+  it("fails loudly when the underlying delete throws and never reports success", async () => {
+    const saved = await store.save(pngBytes(), "a.png");
+    const failing = new MediaStore(root, {
+      deleteFileImpl: async () => {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      },
+    });
+
+    await expect(failing.delete(saved.mediaId)).rejects.toMatchObject({
+      code: "MEDIA_DELETE_FAILED",
+    });
+
+    // 文件仍在：绝不能把真实删除失败当作成功。
+    await expect(store.read(saved.mediaId)).resolves.toBeDefined();
+  });
+
+  it("treats a missing media directory as idempotent not-found", async () => {
+    const missing = new MediaStore(root, {
+      readDirImpl: async () => {
+        throw Object.assign(new Error("no such file"), { code: "ENOENT" });
+      },
+    });
+
+    await expect(missing.delete("some-media")).resolves.toBe(false);
+  });
+
+  it("fails loudly when listing the media directory fails", async () => {
+    const failing = new MediaStore(root, {
+      readDirImpl: async () => {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      },
+    });
+
+    await expect(failing.delete("some-media")).rejects.toMatchObject({
+      code: "MEDIA_DELETE_FAILED",
+    });
   });
 });

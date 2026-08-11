@@ -19,6 +19,8 @@ const mediaParamsSchema = z.object({
  * 媒体适配层：
  * - POST /v1/media 上传图片/音频（multipart，字段名 file），校验格式后落盘；
  * - GET /v1/media/:mediaId 下载受控媒体，供本地核对与鉴权测试。
+ * - DELETE /v1/media/:mediaId 删除受控媒体（媒体文件 + 元数据边车），
+ *   供调用方在会话删除/事务回滚时联动清理；不返回媒体内容。
  */
 export function registerMediaRoute(
   app: FastifyInstance,
@@ -118,6 +120,43 @@ export function registerMediaRoute(
         .header("content-disposition", attachmentHeader(media.meta.name))
         .header("content-length", media.buffer.length)
         .send(media.buffer);
+    },
+  );
+
+  app.delete<{ Params: { mediaId: string } }>(
+    "/v1/media/:mediaId",
+    async (request, reply) => {
+      const parsed = mediaParamsSchema.safeParse(request.params);
+      if (!parsed.success) {
+        return reply.code(400).send({
+          error: "INVALID_REQUEST",
+          message: "mediaId 不正确",
+        });
+      }
+
+      try {
+        const deleted = await store.delete(parsed.data.mediaId);
+        if (!deleted) {
+          return reply.code(404).send({
+            error: "MEDIA_NOT_FOUND",
+            message: "媒体不存在",
+          });
+        }
+
+        // 只回传删除结果，不回传媒体内容。
+        return reply.code(200).send({
+          deleted: true,
+          mediaId: parsed.data.mediaId,
+        });
+      } catch (error) {
+        // 底层删除失败（EACCES/EPERM/EIO 等）：返回通用 5xx，
+        // 不泄露路径/内部细节；详细原因只进服务端日志。
+        request.log.error({ err: error }, "Media delete failed");
+        return reply.code(500).send({
+          error: "MEDIA_DELETE_FAILED",
+          message: "媒体删除失败，请稍后再试",
+        });
+      }
     },
   );
 }

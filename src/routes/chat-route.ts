@@ -4,9 +4,15 @@ import type {
   FastifyRequest,
 } from "fastify";
 import { z } from "zod";
-import type { ChatAgent } from "../agent/chat-agent.js";
+import { ChatAgent } from "../agent/chat-agent.js";
 import { MEDIA_ID_PATTERN, type MediaStore } from "../media/media-store.js";
 import type { ModelMessage } from "../model/model-client.js";
+import {
+  type ChatModelRegistry,
+  UnavailableChatModelError,
+  UnsupportedChatModelError,
+} from "../model/model-registry.js";
+import type { ToolRegistry } from "../tools/tool-registry.js";
 
 // 兼容早期只有 `message` 字段的调用方；完整 `messages` 模式由调用方自行提供上下文。
 const legacySystemMessage: ModelMessage = {
@@ -32,6 +38,7 @@ const chatRequestSchema = z.object({
   message: z.string().trim().min(1, "message 不能为空").max(10_000).optional(),
   messages: z.array(modelMessageSchema).min(1).max(100).optional(),
   attachments: z.array(chatAttachmentSchema).max(10).optional(),
+  model: z.string().trim().min(1, "model 不能为空").max(120).optional(),
   stream: z.boolean().optional().default(false),
 }).strict().refine(
   // 简写 message 与完整 messages 是两种互斥的请求形式，必须且只能选择一种。
@@ -48,7 +55,8 @@ const chatRequestSchema = z.object({
  */
 export function registerChatRoute(
   app: FastifyInstance,
-  chatAgent: ChatAgent,
+  modelRegistry: ChatModelRegistry,
+  toolRegistry: ToolRegistry,
   options: { logChatContent: boolean; mediaStore: MediaStore },
 ): void {
   app.post("/v1/chat", async (request, reply) => {
@@ -61,6 +69,30 @@ export function registerChatRoute(
         details: parsed.error.issues,
       });
     }
+
+    let selectedModel;
+    try {
+      selectedModel = modelRegistry.resolve(parsed.data.model);
+    } catch (error) {
+      if (error instanceof UnsupportedChatModelError) {
+        return reply.code(400).send({
+          error: "UNSUPPORTED_MODEL",
+          message: "不支持该聊天模型",
+          modelId: error.modelId,
+        });
+      }
+      if (error instanceof UnavailableChatModelError) {
+        return reply.code(503).send({
+          error: "MODEL_UNAVAILABLE",
+          message: "该聊天模型当前不可用",
+          modelId: error.modelId,
+        });
+      }
+      throw error;
+    }
+    // 每轮只解析一次模型；固定客户端贯穿后续全部工具步骤，禁止供应商漂移。
+    const modelId = selectedModel.descriptor.id;
+    const chatAgent = new ChatAgent(selectedModel.client, toolRegistry);
 
     // 在进入 Agent 层前，把两种 HTTP 请求格式统一成消息数组。
     const baseMessages = parsed.data.messages ?? [
@@ -85,13 +117,22 @@ export function registerChatRoute(
       // 完整对话可能含隐私或密钥，因此只有显式开启时才记录内容。
       request.log.info({
         event: "pan_pilot.chat.prompt",
+        modelId,
         messageCount: messages.length,
         messages,
       }, "PanPilot chat prompt");
     }
 
     if (parsed.data.stream) {
-      return streamChatReply(request, reply, chatAgent, messages, options, startedAt);
+      return streamChatReply(
+        request,
+        reply,
+        chatAgent,
+        modelId,
+        messages,
+        options,
+        startedAt,
+      );
     }
 
     try {
@@ -100,6 +141,7 @@ export function registerChatRoute(
         request.log.info({
           event: "pan_pilot.chat.reply",
           reply: result.content,
+          modelId,
           model: result.model,
           totalTokens: result.totalTokens ?? null,
           steps: result.steps,
@@ -109,6 +151,7 @@ export function registerChatRoute(
       }
       return {
         message: result.content,
+        modelId,
         model: result.model,
         usage: result.totalTokens === undefined
           ? null
@@ -204,6 +247,7 @@ async function streamChatReply(
   request: FastifyRequest,
   reply: FastifyReply,
   chatAgent: ChatAgent,
+  modelId: string,
   messages: readonly ModelMessage[],
   options: { logChatContent: boolean },
   startedAt: number,
@@ -225,11 +269,15 @@ async function streamChatReply(
       messages,
       abortSignal,
     )) {
-      raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      const responseEvent = event.type === "done"
+        ? { ...event, result: { ...event.result, modelId } }
+        : event;
+      raw.write(`data: ${JSON.stringify(responseEvent)}\n\n`);
       if (event.type === "done" && options.logChatContent) {
         request.log.info({
           event: "pan_pilot.chat.reply",
           reply: event.result.content,
+          modelId,
           model: event.result.model,
           totalTokens: event.result.totalTokens ?? null,
           steps: event.result.steps,

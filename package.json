@@ -5,11 +5,17 @@
   "description": "A small TypeScript agent runtime for learning and experimentation.",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.json",
-    "start": "node --enable-source-maps dist/src/index.js",
-    "test": "vitest run --dir test --passWithNoTests",
+    "dev": "concurrently -k -n server,web \"pnpm run dev:server\" \"pnpm run dev:web\"",
+    "dev:server": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "dev:web": "vite --config web/vite.config.ts",
+    "typecheck": "pnpm run typecheck:server && pnpm run typecheck:web",
+    "typecheck:server": "tsc --noEmit",
+    "typecheck:web": "tsc -p web/tsconfig.json --noEmit",
+    "build": "pnpm run build:server && pnpm run build:web",
+    "build:server": "tsc -p tsconfig.json",
+    "build:web": "vite build --config web/vite.config.ts",
+    "start": "node --env-file-if-exists=.env --enable-source-maps dist/src/index.js",
+    "test": "pnpm run build:web && vitest run --dir test --passWithNoTests",
     "test:watch": "vitest"
   },
   "engines": {
@@ -26,14 +32,22 @@
     "docx": "^9.7.1",
     "fastify": "^5.10.0",
     "jszip": "^3.10.1",
+    "lucide-react": "^1.31.0",
     "openai": "^7.0.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "undici": "^8.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "concurrently": "^10.0.4",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
+    "vite": "^8.2.1",
     "vitest": "^4.1.10"
   }
 }

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import type { ModelClient } from "../src/model/model-client.js";
+import { MediaStore } from "../src/media/media-store.js";
 import { mp3Bytes, pngBytes } from "./helpers/media-fixture.js";
 import { multipartBody } from "./helpers/docx-fixture.js";
 
@@ -162,6 +163,112 @@ describe("media routes", () => {
     });
     expect(oversized.statusCode).toBe(413);
     expect(oversized.json()).toMatchObject({ error: "MEDIA_TOO_LARGE" });
+  });
+
+  it("deletes media and returns only the deletion result", async () => {
+    const app = buildWithToken();
+    const png = pngBytes();
+    const upload = await app.inject({
+      method: "POST",
+      url: "/v1/media",
+      headers: {
+        ...AUTH,
+        "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
+      },
+      payload: multipartBody("file", "删除.png", "image/png", png, BOUNDARY),
+    });
+    const { mediaId } = upload.json() as { mediaId: string };
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/v1/media/${mediaId}`,
+      headers: AUTH,
+    });
+
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toEqual({ deleted: true, mediaId });
+    expect(deleted.rawPayload.toString("utf8")).not.toContain(
+      png.toString("base64"),
+    );
+
+    const after = await app.inject({
+      method: "GET",
+      url: `/v1/media/${mediaId}`,
+      headers: AUTH,
+    });
+    expect(after.statusCode).toBe(404);
+  });
+
+  it("returns 404 for a missing media id and 400 for an invalid one", async () => {
+    const app = buildWithToken();
+
+    const missing = await app.inject({
+      method: "DELETE",
+      url: "/v1/media/does-not-exist",
+      headers: AUTH,
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({ error: "MEDIA_NOT_FOUND" });
+
+    const invalid = await app.inject({
+      method: "DELETE",
+      url: "/v1/media/bad_id",
+      headers: AUTH,
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({ error: "INVALID_REQUEST" });
+  });
+
+  it("protects delete with the API token", async () => {
+    const app = buildWithToken();
+
+    const unauthorized = await app.inject({
+      method: "DELETE",
+      url: "/v1/media/some-id",
+    });
+    expect(unauthorized.statusCode).toBe(401);
+  });
+
+  it("returns a generic 500 without internals when deletion fails", async () => {
+    const failingStore = new MediaStore(mediaDir, {
+      deleteFileImpl: async () => {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      },
+    });
+    const app = buildApp({
+      apiToken: "test-secret",
+      mediaDir,
+      mediaStore: failingStore,
+      modelClient: fakeModelClient(),
+    });
+    apps.push(app);
+    const upload = await app.inject({
+      method: "POST",
+      url: "/v1/media",
+      headers: {
+        ...AUTH,
+        "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
+      },
+      payload: multipartBody("file", "a.png", "image/png", pngBytes(), BOUNDARY),
+    });
+    const { mediaId } = upload.json() as { mediaId: string };
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/v1/media/${mediaId}`,
+      headers: AUTH,
+    });
+
+    expect(deleted.statusCode).toBe(500);
+    expect(deleted.json()).toMatchObject({
+      error: "MEDIA_DELETE_FAILED",
+      message: "媒体删除失败，请稍后再试",
+    });
+    // 不泄露路径或底层错误细节。
+    const body = JSON.stringify(deleted.json());
+    expect(body).not.toContain(mediaDir);
+    expect(body).not.toContain("permission denied");
+    expect(body).not.toContain("EACCES");
   });
 
   function buildWithToken() {

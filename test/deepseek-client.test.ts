@@ -5,8 +5,32 @@ import type {
 } from "openai/resources/chat/completions";
 import {
   DeepSeekClient,
+  resolveChatApiKey,
   type CreateChatCompletion,
 } from "../src/model/deepseek-client.js";
+
+describe("chat provider configuration", () => {
+  it("prefers the Volcengine key for an Ark base URL", () => {
+    expect(resolveChatApiKey(
+      "https://ark.cn-beijing.volces.com/api/coding/v3",
+      { VOLCENGINE_API_KEY: "ark-key", DEEPSEEK_API_KEY: "deepseek-key" },
+    )).toBe("ark-key");
+  });
+
+  it("keeps the DeepSeek key for non-Volcengine providers", () => {
+    expect(resolveChatApiKey(
+      "https://api.deepseek.com",
+      { VOLCENGINE_API_KEY: "ark-key", DEEPSEEK_API_KEY: "deepseek-key" },
+    )).toBe("deepseek-key");
+  });
+
+  it("falls back to the compatibility key when the Ark key is absent", () => {
+    expect(resolveChatApiKey(
+      "https://ark.cn-beijing.volces.com/api/coding/v3",
+      { DEEPSEEK_API_KEY: "compatibility-key" },
+    )).toBe("compatibility-key");
+  });
+});
 
 describe("DeepSeekClient tool protocol", () => {
   it("maps a text completion without exposing tools", async () => {

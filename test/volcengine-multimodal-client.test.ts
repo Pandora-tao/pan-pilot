@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ChatCompletion,
 } from "openai/resources/chat/completions";
+import { EnvHttpProxyAgent } from "undici";
 import {
+  buildMultimodalTransport,
   VolcengineMultimodalClient,
   type CreateMultimodalCompletion,
+  type MultimodalFetch,
 } from "../src/model/volcengine-multimodal-client.js";
 
 /*
@@ -238,6 +241,86 @@ describe("VolcengineMultimodalClient", () => {
     expect(() => new VolcengineMultimodalClient()).toThrow(
       "VOLCENGINE_API_KEY is required",
     );
+  });
+});
+
+/*
+ * 代理传输回归测试：隔离环境真实图片请求超时的根因是 OpenAI SDK 未遵循
+ * 标准代理环境变量；本组用例锁定有代理/无代理两种传输配置，不发起网络。
+ */
+describe("multimodal proxy transport", () => {
+  const PROXY_VARS = [
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+  ] as const;
+  const savedEnv = new Map<string, string | undefined>();
+
+  for (const name of PROXY_VARS) {
+    savedEnv.set(name, process.env[name]);
+  }
+
+  afterEach(() => {
+    for (const [name, value] of savedEnv) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  });
+
+  it("keeps the direct SDK transport when no proxy env is present", () => {
+    for (const name of PROXY_VARS) delete process.env[name];
+
+    const transport = buildMultimodalTransport();
+
+    expect(transport.proxyEnabled).toBe(false);
+    expect(transport.fetch).toBeUndefined();
+  });
+
+  it("wires an EnvHttpProxyAgent dispatcher when proxy env is present", async () => {
+    process.env.HTTPS_PROXY = "http://proxy.internal:3128";
+    process.env.NO_PROXY = "127.0.0.1,localhost";
+    const captured: Array<{ input: unknown; init?: unknown }> = [];
+    const fetchImpl = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        captured.push({ input, init });
+        return new Response("{}", { status: 200 });
+      },
+    ) as unknown as MultimodalFetch;
+
+    const transport = buildMultimodalTransport({ fetchImpl });
+
+    expect(transport.proxyEnabled).toBe(true);
+    expect(transport.fetch).toBeDefined();
+    await transport.fetch!(
+      "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+      { method: "POST" },
+    );
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.input)
+      .toBe("https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions");
+    const dispatcher = (captured[0]?.init as { dispatcher?: unknown })
+      ?.dispatcher;
+    expect(dispatcher).toBeInstanceOf(EnvHttpProxyAgent);
+  });
+
+  it("constructs the real client through the proxy transport", () => {
+    process.env.VOLCENGINE_API_KEY = "test-key";
+    process.env.HTTPS_PROXY = "http://proxy.internal:3128";
+    const fetchImpl = vi.fn(
+      async () => new Response("{}", { status: 200 }),
+    ) as unknown as MultimodalFetch;
+
+    const client = new VolcengineMultimodalClient({ fetchImpl });
+
+    expect(client).toBeDefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
