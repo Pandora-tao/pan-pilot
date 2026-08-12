@@ -16,8 +16,8 @@
 }
 
 * { box-sizing: border-box; }
-html { min-width: 320px; background: var(--canvas); }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--canvas); }
+html { min-width: 320px; min-height: 100%; background: var(--canvas); }
+body { margin: 0; min-width: 320px; min-height: 100%; background: var(--canvas); }
 button, input, select, textarea { font: inherit; }
 button {
   display: inline-flex;
@@ -55,14 +55,14 @@ code {
 }
 
 .app-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   grid-template-columns: var(--sidebar) minmax(0, 1fr);
 }
 .sidebar {
   position: sticky;
   top: 0;
-  height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -446,6 +446,28 @@ code {
   .chat-layout, .approval-layout { grid-template-columns: 1fr; }
   .context-column { grid-template-columns: 1fr 1fr; }
   .conversation { grid-template-rows: minmax(420px, 54vh) auto; }
+}
+
+@media (min-width: 1061px) {
+  html, body, #root { height: 100%; }
+  body { overflow: hidden; }
+  .app-shell { height: 100dvh; min-height: 0; overflow: hidden; }
+  .workspace { height: 100dvh; overflow-y: auto; }
+  .workspace-chat { overflow: hidden; padding-bottom: 28px; }
+  .workspace-chat > .view {
+    height: 100%;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .workspace-chat .chat-layout { min-height: 0; }
+  .workspace-chat .conversation {
+    height: 100%;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .workspace-chat .chat-log { min-height: 0; }
+  .workspace-chat .context-column { min-height: 0; overflow-y: auto; }
 }
 
 @media (max-width: 760px) {

@@ -190,7 +190,7 @@ export function App() {
           baseUrl={settings.baseUrl}
           counts={counts}
         />
-        <main className="workspace">
+        <main className={`workspace workspace-${activeView}`}>
           {activeView === "chat" && (
             <ChatView
               client={client}
