@@ -5,14 +5,16 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { gsap } from "gsap";
 import {
   type KeyboardEvent,
   type ReactNode,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
 import { ApiClient, downloadBlob, readError } from "../../api";
-import { ViewHeader } from "../../components/ViewHeader";
+import { withMotion } from "../../animations";
 import { modelDisplayLabel } from "../../model-selection";
 import type {
   ChatMessage,
@@ -49,7 +51,6 @@ interface ChatViewProps {
   onModelChange: (modelId: string) => void;
   onRequestMediaUpload: () => void;
   onToggleMedia: (mediaId: string) => void;
-  onClearSelected: () => void;
   onSent: () => void;
   toast: (message: string) => void;
 }
@@ -65,7 +66,6 @@ export function ChatView({
   onModelChange,
   onRequestMediaUpload,
   onToggleMedia,
-  onClearSelected,
   onSent,
   toast,
 }: ChatViewProps) {
@@ -87,7 +87,7 @@ export function ChatView({
     if (!text || running) return;
     const requestAttachments = selected;
     const userMessage: ChatMessage = { role: "user", content: text };
-    const nextConversation = trimHistory([...conversation, userMessage]);
+    const nextConversation = [...conversation, userMessage];
     const assistantId = crypto.randomUUID();
     setConversation(nextConversation);
     setMessages((current) => [
@@ -124,10 +124,10 @@ export function ChatView({
         ? await consumeSse(response, assistantId, setMessages)
         : normalizeNonStreaming(await response.json());
       finalizeAssistant(assistantId, result);
-      setConversation((current) => trimHistory([
-        ...current,
+      setConversation((current) => [
+        ...(result.contextMessages ?? current),
         { role: "assistant", content: result.content },
-      ]));
+      ]);
       onSent();
     } catch (error) {
       const stopped = error instanceof DOMException && error.name === "AbortError";
@@ -172,40 +172,6 @@ export function ChatView({
 
   return (
     <section className="view active">
-      <ViewHeader
-        number="01"
-        title="与 Agent 对话"
-        description="发送消息、观察工具执行过程，并把已上传的图片或音频附加到本次请求。"
-        actions={(
-          <>
-            <label className="model-picker">
-              <span>模型</span>
-              <select
-                aria-label="选择聊天模型"
-                value={selectedModelId}
-                disabled={running || !modelCatalog}
-                onChange={(event) => onModelChange(event.target.value)}
-              >
-                {!modelCatalog && <option value="">正在加载模型…</option>}
-                {modelCatalog?.models.map((model) => (
-                  <option
-                    key={model.id}
-                    value={model.id}
-                    disabled={model.status !== "available"}
-                  >
-                    {model.label}{model.status === "available" ? "" : "（未配置）"}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button type="button" onClick={clearChat} disabled={running}>
-              <Trash2 aria-hidden="true" size={16} />
-              清空对话
-            </button>
-          </>
-        )}
-      />
-
       <div className="chat-layout">
         <div className="surface conversation">
           <div className="chat-log" aria-live="polite">
@@ -223,96 +189,119 @@ export function ChatView({
           </div>
 
           <div className="composer">
-            <div className="composer-row">
-              <textarea
-                aria-label="消息内容"
-                value={draft}
-                onChange={(event) => onDraftChange(event.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="输入消息；Enter 发送，Shift + Enter 换行"
-              />
+            <form
+              className="composer-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void sendMessage();
+              }}
+            >
+              <div className="composer-input-wrap">
+                <label className="composer-label" htmlFor="composer-message">MESSAGE</label>
+                <textarea
+                  id="composer-message"
+                  aria-label="消息内容"
+                  value={draft}
+                  onChange={(event) => onDraftChange(event.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="输入消息；Enter 发送，Shift + Enter 换行"
+                />
+                {selected.length > 0 && (
+                  <div className="composer-attachments">
+                    {selected.map((item) => (
+                      <span className="composer-attachment" key={item.mediaId}>
+                        <span className="attachment-chip-name">{item.name}</span>
+                        <span className="attachment-chip-meta">
+                          {kindLabel(item.kind)} · {formatSize(item.size)}
+                        </span>
+                        <button
+                          className="icon-button"
+                          type="button"
+                          aria-label={`移除 ${item.name}`}
+                          onClick={() => onToggleMedia(item.mediaId)}
+                        >
+                          <X aria-hidden="true" size={14} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="composer-footer">
+                  <div className="composer-tools">
+                    <label className="model-picker compact">
+                      <span>模型</span>
+                      <select
+                        aria-label="选择聊天模型"
+                        value={selectedModelId}
+                        disabled={running || !modelCatalog}
+                        onChange={(event) => onModelChange(event.target.value)}
+                      >
+                        {!modelCatalog && <option value="">正在加载模型…</option>}
+                        {modelCatalog?.models.map((model) => (
+                          <option
+                            key={model.id}
+                            value={model.id}
+                            disabled={model.status !== "available"}
+                          >
+                            {model.label}{model.status === "available" ? "" : "（未配置）"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="stream-toggle">
+                      <input
+                        type="checkbox"
+                        checked={stream}
+                        onChange={(event) => setStream(event.target.checked)}
+                      />
+                      流式输出
+                    </label>
+                    <button
+                      className="composer-tool"
+                      type="button"
+                      onClick={onRequestMediaUpload}
+                    >
+                      <Paperclip aria-hidden="true" size={14} />
+                      附件
+                    </button>
+                    <button
+                      className="composer-tool danger"
+                      type="button"
+                      onClick={clearChat}
+                      disabled={running}
+                      title="清空对话"
+                    >
+                      <Trash2 aria-hidden="true" size={14} />
+                      清空
+                    </button>
+                  </div>
+                  <span className="composer-status">
+                    {selected.length ? `已添加 ${selected.length} 个附件` : "未添加附件"}
+                  </span>
+                </div>
+              </div>
               <div className="composer-actions">
                 <button
-                  className="danger"
+                  className="composer-stop"
                   type="button"
                   disabled={!running}
                   onClick={() => abortRef.current?.abort()}
                 >
-                  <Square aria-hidden="true" size={15} />
+                  <Square aria-hidden="true" size={14} />
                   停止
                 </button>
                 <button
-                  className="primary"
-                  type="button"
+                  className={`composer-send ${draft.trim() && !running ? "is-ready" : ""}`}
+                  type="submit"
                   disabled={running || !draft.trim()}
-                  onClick={() => void sendMessage()}
                 >
-                  <Send aria-hidden="true" size={16} />
+                  <Send aria-hidden="true" size={17} />
                   发送
                 </button>
               </div>
-            </div>
-            <div className="composer-meta">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={stream}
-                  onChange={(event) => setStream(event.target.checked)}
-                />
-                流式输出
-              </label>
-              <button className="quiet small" type="button" onClick={onRequestMediaUpload}>
-                <Paperclip aria-hidden="true" size={15} />
-                添加图片或音频
-              </button>
-              <span>{selected.length ? `已添加 ${selected.length} 个附件` : "未添加附件"}</span>
-            </div>
+            </form>
           </div>
         </div>
-
-        <aside className="context-column">
-          <section className="surface">
-            <div className="section-head">
-              <h3>本次附件</h3>
-              <button className="small" type="button" onClick={onClearSelected}>
-                全部移除
-              </button>
-            </div>
-            {selected.length ? (
-              <div className="attachment-list">
-                {selected.map((item) => (
-                  <div className="attachment-item" key={item.mediaId}>
-                    <div>
-                      <div className="attachment-name">{item.name}</div>
-                      <div className="attachment-meta">
-                        {item.kind === "image" ? "图片" : "音频"} · {formatSize(item.size)}
-                      </div>
-                    </div>
-                    <button
-                      className="icon-button"
-                      type="button"
-                      aria-label={`移除 ${item.name}`}
-                      onClick={() => onToggleMedia(item.mediaId)}
-                    >
-                      <X aria-hidden="true" size={16} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="selected-empty">从资产页选择，或直接上传图片和音频。</div>
-            )}
-          </section>
-          <section className="surface">
-            <div className="section-head"><h3>请求说明</h3></div>
-            <div className="section-body">
-              <p className="context-note">
-                图片会调用 <code>analyze_image</code>。音频会根据请求调用{" "}
-                <code>transcribe_audio</code> 或 <code>analyze_audio</code>。
-              </p>
-            </div>
-          </section>
-        </aside>
       </div>
     </section>
   );
@@ -327,10 +316,33 @@ function MessageRow({
   client: ApiClient;
   toast: (message: string) => void;
 }) {
+  const rowRef = useRef<HTMLElement>(null);
+
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    return withMotion(() => {
+      gsap.fromTo(
+        row,
+        { autoAlpha: 0, y: 10 },
+        {
+          autoAlpha: 1,
+          y: 0,
+          duration: 0.3,
+          ease: "power2.out",
+          clearProps: "transform,opacity,visibility",
+        },
+      );
+    });
+  }, []);
+
   return (
-    <article className={`message ${message.role} ${message.error ? "error" : ""}`}>
-      <div className="message-role">{message.role === "user" ? "YOU" : "AI"}</div>
-      <div className="message-body">
+    <article
+      ref={rowRef}
+      className={`message ${message.role}${message.error ? " error" : ""}`}
+    >
+      <div className="message-author">{message.role === "user" ? "你" : "PanPilot"}</div>
+      <div className="message-card">
         <div className="message-content">
           <LinkedContent text={message.content} client={client} toast={toast} />
           {message.streaming && <span className="cursor" />}
@@ -469,7 +481,11 @@ function normalizeNonStreaming(data: {
   modelId?: string;
   model?: string;
   usage?: { totalTokens?: number };
-  execution?: { toolExecutions?: ToolExecution[] };
+  execution?: {
+    toolExecutions?: ToolExecution[];
+    context?: ChatResult["context"];
+    contextMessages?: ChatMessage[];
+  };
 }): ChatResult {
   return {
     content: data.message ?? "",
@@ -477,6 +493,8 @@ function normalizeNonStreaming(data: {
     model: data.model ?? "",
     totalTokens: data.usage?.totalTokens,
     toolExecutions: data.execution?.toolExecutions ?? [],
+    context: data.execution?.context,
+    contextMessages: data.execution?.contextMessages,
   };
 }
 
@@ -486,12 +504,10 @@ function resultMeta(result: ChatResult, catalog: ModelsResponse | null): string 
     result.model ? `模型 ${result.model}` : "",
     result.steps === undefined ? "" : `${result.steps} 步`,
     result.totalTokens === undefined ? "" : `${result.totalTokens} tokens`,
+    result.context === undefined
+      ? ""
+      : `已压缩 ${result.context.summarizedMessages} 条上下文`,
   ].filter(Boolean).join(" · ");
-}
-
-function trimHistory(messages: ChatMessage[]): ChatMessage[] {
-  if (messages.length <= 60) return messages;
-  return [messages[0] ?? SYSTEM_MESSAGE, ...messages.slice(-55)];
 }
 
 function errorMessage(error: unknown): string {
@@ -502,4 +518,19 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function kindLabel(kind: MediaAsset["kind"]): string {
+  switch (kind) {
+    case "image":
+      return "图片";
+    case "audio":
+      return "音频";
+    case "text":
+      return "文本";
+    case "document":
+      return "文档";
+    case "binary":
+      return "文件";
+  }
 }

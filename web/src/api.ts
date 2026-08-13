@@ -1,11 +1,15 @@
 import type {
-  Approval,
   CapabilitiesResponse,
   ChatMessage,
   FileAsset,
   MediaAsset,
   ModelsResponse,
   PluginStatus,
+  PluginSuggestion,
+  ScheduledTask,
+  ScheduledTaskInput,
+  ScheduledTaskRun,
+  ScheduledTasksResponse,
 } from "./types";
 
 export class ApiError extends Error {
@@ -56,54 +60,108 @@ export class ApiClient {
     return data.plugins ?? [];
   }
 
-  async approvals(): Promise<Approval[]> {
-    const data = await this.json<{ approvals: Approval[] }>("/v1/plugins/approvals");
-    return data.approvals ?? [];
+  async pluginSuggestions(): Promise<PluginSuggestion[]> {
+    const data = await this.json<{ suggestions: PluginSuggestion[] }>(
+      "/v1/plugins/suggestions",
+    );
+    return data.suggestions ?? [];
   }
 
-  async reloadPlugins(): Promise<{ approval?: Approval; applied?: boolean; plugins?: PluginStatus[] }> {
+  async reloadPlugins(): Promise<{ result: { applied: boolean; plugins: PluginStatus[] } }> {
     return this.json("/v1/plugins/reload", { method: "POST" });
   }
 
   async setPluginEnabled(
     name: string,
     enabled: boolean,
-  ): Promise<{ approval?: Approval }> {
+  ): Promise<{ plugin: PluginStatus }> {
     return this.json(
       `/v1/plugins/${encodeURIComponent(name)}/${enabled ? "enable" : "disable"}`,
       { method: "POST" },
     );
   }
 
-  async createPluginDraft(manifest: unknown): Promise<Approval> {
-    const data = await this.json<{ approval: Approval }>("/v1/plugins/approvals", {
+  installPlugin(manifest: unknown): Promise<unknown> {
+    return this.json("/v1/plugins/install", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: { type: "create_plugin", manifest } }),
-    });
-    return data.approval;
-  }
-
-  approve(approval: Approval): Promise<unknown> {
-    return this.json(`/v1/plugins/approvals/${approval.id}/approve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hash: approval.hash }),
+      body: JSON.stringify({ manifest }),
     });
   }
 
-  reject(approval: Approval): Promise<unknown> {
-    return this.json(`/v1/plugins/approvals/${approval.id}/reject`, {
+  installPluginSuggestion(id: string): Promise<unknown> {
+    return this.json(`/v1/plugins/suggestions/${encodeURIComponent(id)}/install`, {
       method: "POST",
     });
   }
 
-  execute(approval: Approval): Promise<unknown> {
-    return this.json(`/v1/plugins/approvals/${approval.id}/execute`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hash: approval.hash }),
+  dismissPluginSuggestion(id: string): Promise<unknown> {
+    return this.json(`/v1/plugins/suggestions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
     });
+  }
+
+  scheduledTasks(): Promise<ScheduledTasksResponse> {
+    return this.json("/v1/scheduled-tasks");
+  }
+
+  async scheduledTaskRuns(taskId?: string, limit = 50): Promise<ScheduledTaskRun[]> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (taskId) query.set("taskId", taskId);
+    const data = await this.json<{ runs: ScheduledTaskRun[] }>(
+      `/v1/scheduled-task-runs?${query}`,
+    );
+    return data.runs;
+  }
+
+  createScheduledTask(input: ScheduledTaskInput): Promise<{ task: ScheduledTask }> {
+    return this.json("/v1/scheduled-tasks", jsonBody("POST", input));
+  }
+
+  updateScheduledTask(id: string, input: ScheduledTaskInput): Promise<{ task: ScheduledTask }> {
+    return this.json(`/v1/scheduled-tasks/${encodeURIComponent(id)}`, jsonBody("PUT", input));
+  }
+
+  deleteScheduledTask(id: string): Promise<unknown> {
+    return this.request(`/v1/scheduled-tasks/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .then(async (response) => {
+        if (!response.ok) throw new ApiError(await readError(response), response.status);
+      });
+  }
+
+  setScheduledTaskEnabled(id: string, enabled: boolean): Promise<{ task: ScheduledTask }> {
+    return this.json(
+      `/v1/scheduled-tasks/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`,
+      { method: "POST" },
+    );
+  }
+
+  runScheduledTask(id: string): Promise<{ run: ScheduledTaskRun }> {
+    return this.json(`/v1/scheduled-tasks/${encodeURIComponent(id)}/run`, { method: "POST" });
+  }
+
+  pauseScheduledTaskRun(id: string): Promise<{ run: ScheduledTaskRun }> {
+    return this.json(
+      `/v1/scheduled-task-runs/${encodeURIComponent(id)}/pause`,
+      { method: "POST" },
+    );
+  }
+
+  resumeScheduledTaskRun(id: string): Promise<{ run: ScheduledTaskRun }> {
+    return this.json(
+      `/v1/scheduled-task-runs/${encodeURIComponent(id)}/resume`,
+      { method: "POST" },
+    );
+  }
+
+  resolveScheduledTaskRunRecovery(
+    id: string,
+    action: "retry" | "terminate",
+  ): Promise<{ run: ScheduledTaskRun }> {
+    return this.json(
+      `/v1/scheduled-task-runs/${encodeURIComponent(id)}/recovery`,
+      jsonBody("POST", { action }),
+    );
   }
 
   async uploadFile(file: File): Promise<FileAsset> {
@@ -125,7 +183,10 @@ export class ApiClient {
   chat(
     messages: ChatMessage[],
     stream: boolean,
-    attachments: Array<{ mediaId: string; kind: "image" | "audio" }>,
+    attachments: Array<{
+      mediaId: string;
+      kind: "image" | "audio" | "text" | "document" | "binary";
+    }>,
     modelId: string,
     signal: AbortSignal,
   ): Promise<Response> {
@@ -144,6 +205,14 @@ export class ApiClient {
       signal,
     });
   }
+}
+
+function jsonBody(method: string, body: unknown): RequestInit {
+  return {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 
 export async function readError(response: Response): Promise<string> {

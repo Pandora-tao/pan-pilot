@@ -9,7 +9,7 @@ const descriptions: Record<string, string> = {
   files: "Word 文档上传、读取与编辑",
   media: "图片与音频上传、多模态分析",
   search: "联网搜索",
-  plugins: "声明式插件与审批控制",
+  plugins: "用户管理的声明式插件",
   memory: "长期记忆",
   planning: "任务规划",
 };
@@ -24,7 +24,6 @@ export function CapabilitiesView({ data, refresh }: CapabilitiesViewProps) {
   return (
     <section className="view active">
       <ViewHeader
-        number="05"
         title="能力状态"
         description="读取服务端真实能力声明，区分可用、阻塞和预留状态。"
         actions={(

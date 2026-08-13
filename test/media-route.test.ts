@@ -109,10 +109,10 @@ describe("media routes", () => {
     expect(download.statusCode).toBe(401);
   });
 
-  it("rejects wrong extensions and non-media content", async () => {
+  it("accepts arbitrary text and binary attachments", async () => {
     const app = buildWithToken();
 
-    const wrongExtension = await app.inject({
+    const text = await app.inject({
       method: "POST",
       url: "/v1/media",
       headers: {
@@ -121,20 +121,67 @@ describe("media routes", () => {
       },
       payload: multipartBody("file", "note.txt", "text/plain", Buffer.from("hi"), BOUNDARY),
     });
-    expect(wrongExtension.statusCode).toBe(415);
-    expect(wrongExtension.json()).toMatchObject({ error: "UNSUPPORTED_MEDIA_TYPE" });
+    expect(text.statusCode).toBe(201);
+    expect(text.json()).toMatchObject({
+      kind: "text",
+      mimeType: "text/plain",
+      size: 2,
+    });
 
-    const fakeContent = await app.inject({
+    const binary = await app.inject({
       method: "POST",
       url: "/v1/media",
       headers: {
         ...AUTH,
         "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
       },
-      payload: multipartBody("file", "fake.png", "image/png", Buffer.from("not an image"), BOUNDARY),
+      payload: multipartBody(
+        "file",
+        "archive.bin",
+        "application/octet-stream",
+        Buffer.from([0x00, 0x01, 0xff, 0xfe]),
+        BOUNDARY,
+      ),
     });
-    expect(fakeContent.statusCode).toBe(415);
-    expect(fakeContent.json()).toMatchObject({ error: "INVALID_MEDIA" });
+    expect(binary.statusCode).toBe(201);
+    expect(binary.json()).toMatchObject({
+      kind: "binary",
+      mimeType: "application/octet-stream",
+    });
+  });
+
+  it("rejects empty content and magic-format extension mismatches", async () => {
+    const app = buildWithToken();
+
+    const empty = await app.inject({
+      method: "POST",
+      url: "/v1/media",
+      headers: {
+        ...AUTH,
+        "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
+      },
+      payload: multipartBody("file", "empty.txt", "text/plain", Buffer.alloc(0), BOUNDARY),
+    });
+    expect(empty.statusCode).toBe(415);
+    expect(empty.json()).toMatchObject({ error: "INVALID_MEDIA" });
+
+    const fakePng = await app.inject({
+      method: "POST",
+      url: "/v1/media",
+      headers: {
+        ...AUTH,
+        "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
+      },
+      payload: multipartBody(
+        "file",
+        "fake.png",
+        "image/png",
+        Buffer.from("%PDF-1.4\n% not an image"),
+        BOUNDARY,
+      ),
+    });
+    expect(fakePng.statusCode).toBe(415);
+    expect(fakePng.json()).toMatchObject({ error: "UNSUPPORTED_MEDIA_TYPE" });
   });
 
   it("rejects media over the configured size limit", async () => {

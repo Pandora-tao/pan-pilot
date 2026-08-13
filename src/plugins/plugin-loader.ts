@@ -27,7 +27,7 @@ export interface PluginLoadResult {
 
 /**
  * 插件目录的确定性快照哈希：目录名 + 规范化 manifest + 加载错误。
- * 用于把 reload 审批绑定到「创建草案时目录里到底有什么」，
+ * 用于对插件目录生成稳定快照，
  * 批准后任何目录变化都会在执行前被拒绝。
  */
 export function hashPluginDirectorySnapshot(pluginsDir: string): string {

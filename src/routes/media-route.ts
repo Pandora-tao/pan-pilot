@@ -8,18 +8,15 @@ import {
 } from "../media/media-store.js";
 import { attachmentHeader } from "./download-headers.js";
 
-/** 上传前先按扩展名粗筛；真正的类型判定以魔数为准（MediaStore 二次校验）。 */
-const ALLOWED_EXTENSION_PATTERN = /\.(png|jpe?g|webp|gif|mp3|wav)$/i;
-
 const mediaParamsSchema = z.object({
   mediaId: z.string().regex(MEDIA_ID_PATTERN),
 }).strict();
 
 /**
- * 媒体适配层：
- * - POST /v1/media 上传图片/音频（multipart，字段名 file），校验格式后落盘；
- * - GET /v1/media/:mediaId 下载受控媒体，供本地核对与鉴权测试。
- * - DELETE /v1/media/:mediaId 删除受控媒体（媒体文件 + 元数据边车），
+ * 附件适配层：
+ * - POST /v1/media 上传任意附件（multipart，字段名 file），内容检测后落盘；
+ * - GET /v1/media/:mediaId 下载受控附件，供本地核对与鉴权测试。
+ * - DELETE /v1/media/:mediaId 删除受控附件（文件 + 元数据边车），
  *   供调用方在会话删除/事务回滚时联动清理；不返回媒体内容。
  */
 export function registerMediaRoute(
@@ -34,7 +31,7 @@ export function registerMediaRoute(
     } catch {
       return reply.code(413).send({
         error: "MEDIA_TOO_LARGE",
-        message: `媒体不能超过 ${maxBytes / 1024 / 1024}MB`,
+        message: `附件不能超过 ${maxBytes / 1024 / 1024}MB`,
       });
     }
     if (!part) {
@@ -45,12 +42,6 @@ export function registerMediaRoute(
     }
 
     const originalName = path.basename(part.filename || "upload");
-    if (!ALLOWED_EXTENSION_PATTERN.test(originalName)) {
-      return reply.code(415).send({
-        error: "UNSUPPORTED_MEDIA_TYPE",
-        message: "仅支持图片（png/jpg/jpeg/webp/gif）与音频（mp3/wav）",
-      });
-    }
 
     let buffer: Buffer;
     try {
@@ -58,7 +49,7 @@ export function registerMediaRoute(
     } catch {
       return reply.code(413).send({
         error: "MEDIA_TOO_LARGE",
-        message: `媒体不能超过 ${maxBytes / 1024 / 1024}MB`,
+        message: `附件不能超过 ${maxBytes / 1024 / 1024}MB`,
       });
     }
 
@@ -76,19 +67,19 @@ export function registerMediaRoute(
         if (error.code === "MEDIA_TOO_LARGE") {
           return reply.code(413).send({
             error: "MEDIA_TOO_LARGE",
-            message: `媒体不能超过 ${maxBytes / 1024 / 1024}MB`,
+            message: `附件不能超过 ${maxBytes / 1024 / 1024}MB`,
           });
         }
         if (error.code === "UNSUPPORTED_EXTENSION") {
           return reply.code(415).send({
             error: "UNSUPPORTED_MEDIA_TYPE",
-            message: "仅支持图片（png/jpg/jpeg/webp/gif）与音频（mp3/wav）",
+            message: "扩展名与文件内容不符或不受支持",
           });
         }
         if (error.code === "INVALID_MEDIA") {
           return reply.code(415).send({
             error: "INVALID_MEDIA",
-            message: "文件内容不是受支持的图片或音频",
+            message: "附件内容为空或无法识别",
           });
         }
       }

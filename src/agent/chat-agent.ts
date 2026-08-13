@@ -4,6 +4,12 @@ import type {
   ModelMessage,
 } from "../model/model-client.js";
 import { ToolRegistryError, type ToolRegistry } from "../tools/tool-registry.js";
+import {
+  ContextManager,
+  emptyContextUsage,
+  type ContextManagerOptions,
+  type ContextUsage,
+} from "./context-manager.js";
 
 /**
  * 一次工具执行的对外摘要：只含标识和状态，不包含原始入参与工具结果。
@@ -23,6 +29,9 @@ export interface AgentRunResult {
   /** 本轮实际执行的模型调用次数，含产出最终回答的那一次。 */
   steps: number;
   toolExecutions: readonly AgentToolExecution[];
+  context?: ContextUsage;
+  /** 仅含调用方原始角色的压缩历史，不含内部 tool 消息和工具参数。 */
+  contextMessages?: readonly ModelMessage[];
 }
 
 /**
@@ -40,6 +49,7 @@ export type AgentStreamEvent =
 export interface ChatAgentOptions {
   /** 模型调用最大轮次，防止工具循环失控；默认 10。 */
   maxSteps?: number;
+  context?: ContextManagerOptions;
 }
 
 const DEFAULT_MAX_STEPS = 10;
@@ -63,6 +73,7 @@ export class AgentMaxStepsError extends Error {
  */
 export class ChatAgent {
   private readonly maxSteps: number;
+  private readonly contextManager: ContextManager;
 
   // 依赖接口而非 DeepSeekClient 或具体工具，便于切换实现，也便于测试注入假实现。
   constructor(
@@ -75,6 +86,7 @@ export class ChatAgent {
       throw new Error(`maxSteps 必须是正整数，实际为 ${maxSteps}`);
     }
     this.maxSteps = maxSteps;
+    this.contextManager = new ContextManager(modelClient, options.context);
   }
 
   async chat(
@@ -88,10 +100,26 @@ export class ChatAgent {
     let totalTokens: number | undefined;
     let model = "";
     let steps = 0;
+    let context = emptyContextUsage();
+    let contextMessages: ModelMessage[] | undefined;
 
     while (steps < this.maxSteps) {
       signal?.throwIfAborted();
       steps += 1;
+
+      const prepared = await this.contextManager.prepare(
+        history,
+        this.toolRegistry.listDefinitions(),
+        context,
+        signal,
+      );
+      context = prepared.usage;
+      if (prepared.compacted) {
+        contextMessages = publicContextMessages(history);
+      }
+      if (prepared.totalTokens !== undefined) {
+        totalTokens = (totalTokens ?? 0) + prepared.totalTokens;
+      }
 
       const completion = await this.modelClient.complete({
         messages: history,
@@ -111,6 +139,8 @@ export class ChatAgent {
           ...(totalTokens === undefined ? {} : { totalTokens }),
           steps,
           toolExecutions,
+          ...(context.compactions === 0 ? {} : { context }),
+          ...(contextMessages === undefined ? {} : { contextMessages }),
         };
       }
 
@@ -148,10 +178,26 @@ export class ChatAgent {
     let totalTokens: number | undefined;
     let model = "";
     let steps = 0;
+    let context = emptyContextUsage();
+    let contextMessages: ModelMessage[] | undefined;
 
     while (steps < this.maxSteps) {
       signal?.throwIfAborted();
       steps += 1;
+
+      const prepared = await this.contextManager.prepare(
+        history,
+        this.toolRegistry.listDefinitions(),
+        context,
+        signal,
+      );
+      context = prepared.usage;
+      if (prepared.compacted) {
+        contextMessages = publicContextMessages(history);
+      }
+      if (prepared.totalTokens !== undefined) {
+        totalTokens = (totalTokens ?? 0) + prepared.totalTokens;
+      }
 
       let completion: ModelCompletion | undefined;
       for await (const event of this.modelClient.completeStream({
@@ -184,6 +230,8 @@ export class ChatAgent {
             ...(totalTokens === undefined ? {} : { totalTokens }),
             steps,
             toolExecutions,
+            ...(context.compactions === 0 ? {} : { context }),
+            ...(contextMessages === undefined ? {} : { contextMessages }),
           },
         };
         return;
@@ -248,6 +296,14 @@ export class ChatAgent {
       yield execution;
     }
   }
+}
+
+function publicContextMessages(history: readonly ModelMessage[]): ModelMessage[] {
+  return history.flatMap((message): ModelMessage[] => {
+    if (message.role === "tool") return [];
+    if (message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0) return [];
+    return [{ role: message.role, content: message.content }];
+  });
 }
 
 function serializeToolResult(result: unknown): string {

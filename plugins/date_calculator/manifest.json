@@ -1,0 +1,41 @@
+{
+  "apiVersion": "v1",
+  "name": "date_calculator",
+  "description": "进行日期加减、计算两个日期相差天数或查询星期；日期使用 YYYY-MM-DD，不处理具体时刻。",
+  "parameters": {
+    "oneOf": [
+      {
+        "type": "object",
+        "properties": {
+          "operation": { "type": "string", "const": "add_days" },
+          "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "days": { "type": "integer", "minimum": -36600, "maximum": 36600 }
+        },
+        "required": ["operation", "date", "days"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "operation": { "type": "string", "const": "days_between" },
+          "startDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "endDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+        },
+        "required": ["operation", "startDate", "endDate"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "operation": { "type": "string", "const": "day_of_week" },
+          "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+        },
+        "required": ["operation", "date"],
+        "additionalProperties": false
+      }
+    ],
+    "type": "object"
+  },
+  "executor": { "type": "builtin", "ref": "date_calculator" },
+  "enabled": true
+}

@@ -4,9 +4,11 @@ import {
   ChatModelRegistry,
   createChatModelRegistry,
   DEEPSEEK_OFFICIAL_V4_FLASH,
+  DEEPSEEK_OFFICIAL_V4_PRO,
   UnavailableChatModelError,
   UnsupportedChatModelError,
   VOLCENGINE_DEEPSEEK_V4_FLASH,
+  VOLCENGINE_DEEPSEEK_V4_PRO,
 } from "../src/model/model-registry.js";
 
 describe("ChatModelRegistry", () => {
@@ -25,9 +27,21 @@ describe("ChatModelRegistry", () => {
         status: "available",
       }),
       expect.objectContaining({
+        id: VOLCENGINE_DEEPSEEK_V4_PRO,
+        provider: "volcengine",
+        upstreamModel: "deepseek-v4-pro",
+        status: "available",
+      }),
+      expect.objectContaining({
         id: DEEPSEEK_OFFICIAL_V4_FLASH,
         provider: "deepseek",
         upstreamModel: "deepseek-v4-flash",
+        status: "available",
+      }),
+      expect.objectContaining({
+        id: DEEPSEEK_OFFICIAL_V4_PRO,
+        provider: "deepseek",
+        upstreamModel: "deepseek-v4-pro",
         status: "available",
       }),
     ]);
@@ -42,7 +56,9 @@ describe("ChatModelRegistry", () => {
 
     expect(registry.resolve().client).toBe(volcengine);
     expect(registry.resolve(VOLCENGINE_DEEPSEEK_V4_FLASH).client).toBe(volcengine);
+    expect(registry.resolve(VOLCENGINE_DEEPSEEK_V4_PRO).client).toBe(volcengine);
     expect(registry.resolve(DEEPSEEK_OFFICIAL_V4_FLASH).client).toBe(deepseek);
+    expect(registry.resolve(DEEPSEEK_OFFICIAL_V4_PRO).client).toBe(deepseek);
   });
 
   it("rejects unknown and unavailable ids without fallback", () => {
@@ -50,11 +66,14 @@ describe("ChatModelRegistry", () => {
     const registry = new ChatModelRegistry([
       entry(VOLCENGINE_DEEPSEEK_V4_FLASH, "volcengine", available),
       entry(DEEPSEEK_OFFICIAL_V4_FLASH, "deepseek"),
+      entry(DEEPSEEK_OFFICIAL_V4_PRO, "deepseek"),
     ], VOLCENGINE_DEEPSEEK_V4_FLASH);
 
     expect(() => registry.resolve("unknown/model"))
       .toThrow(UnsupportedChatModelError);
     expect(() => registry.resolve(DEEPSEEK_OFFICIAL_V4_FLASH))
+      .toThrow(UnavailableChatModelError);
+    expect(() => registry.resolve(DEEPSEEK_OFFICIAL_V4_PRO))
       .toThrow(UnavailableChatModelError);
     expect(registry.resolve().client).toBe(available);
   });
@@ -70,6 +89,8 @@ function fakeRegistry(volcengine: ModelClient, deepseek: ModelClient) {
   return new ChatModelRegistry([
     entry(VOLCENGINE_DEEPSEEK_V4_FLASH, "volcengine", volcengine),
     entry(DEEPSEEK_OFFICIAL_V4_FLASH, "deepseek", deepseek),
+    entry(VOLCENGINE_DEEPSEEK_V4_PRO, "volcengine", volcengine),
+    entry(DEEPSEEK_OFFICIAL_V4_PRO, "deepseek", deepseek),
   ], VOLCENGINE_DEEPSEEK_V4_FLASH);
 }
 

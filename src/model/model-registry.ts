@@ -3,10 +3,15 @@ import type { ModelClient } from "./model-client.js";
 
 export const VOLCENGINE_DEEPSEEK_V4_FLASH =
   "volcengine/deepseek-v4-flash";
+export const VOLCENGINE_DEEPSEEK_V4_PRO =
+  "volcengine/deepseek-v4-pro";
 export const DEEPSEEK_OFFICIAL_V4_FLASH =
   "deepseek/deepseek-v4-flash";
+export const DEEPSEEK_OFFICIAL_V4_PRO =
+  "deepseek/deepseek-v4-pro";
 export const DEFAULT_CHAT_MODEL_ID = VOLCENGINE_DEEPSEEK_V4_FLASH;
-const UPSTREAM_MODEL = "deepseek-v4-flash";
+const DEEPSEEK_V4_FLASH = "deepseek-v4-flash";
+const DEEPSEEK_V4_PRO = "deepseek-v4-pro";
 
 export type ChatModelStatus = "available" | "unavailable";
 
@@ -96,6 +101,17 @@ export function createChatModelRegistry(
       id: VOLCENGINE_DEEPSEEK_V4_FLASH,
       provider: "volcengine",
       label: "火山方舟 · DeepSeek V4 Flash",
+      upstreamModel: DEEPSEEK_V4_FLASH,
+      apiKey: volcengineKey,
+      baseURL: trimmed(env.VOLCENGINE_BASE_URL)
+        ?? "https://ark.cn-beijing.volces.com/api/coding/v3",
+      resolvedAddress: trimmed(env.VOLCENGINE_CHAT_RESOLVED_ADDRESS),
+    }),
+    providerEntry({
+      id: VOLCENGINE_DEEPSEEK_V4_PRO,
+      provider: "volcengine",
+      label: "火山方舟 · DeepSeek V4 Pro",
+      upstreamModel: DEEPSEEK_V4_PRO,
       apiKey: volcengineKey,
       baseURL: trimmed(env.VOLCENGINE_BASE_URL)
         ?? "https://ark.cn-beijing.volces.com/api/coding/v3",
@@ -105,6 +121,16 @@ export function createChatModelRegistry(
       id: DEEPSEEK_OFFICIAL_V4_FLASH,
       provider: "deepseek",
       label: "DeepSeek 官方 · V4 Flash",
+      upstreamModel: DEEPSEEK_V4_FLASH,
+      apiKey: deepseekKey,
+      baseURL: trimmed(env.DEEPSEEK_BASE_URL) ?? "https://api.deepseek.com",
+      resolvedAddress: trimmed(env.DEEPSEEK_RESOLVED_ADDRESS),
+    }),
+    providerEntry({
+      id: DEEPSEEK_OFFICIAL_V4_PRO,
+      provider: "deepseek",
+      label: "DeepSeek 官方 · V4 Pro",
+      upstreamModel: DEEPSEEK_V4_PRO,
       apiKey: deepseekKey,
       baseURL: trimmed(env.DEEPSEEK_BASE_URL) ?? "https://api.deepseek.com",
       resolvedAddress: trimmed(env.DEEPSEEK_RESOLVED_ADDRESS),
@@ -136,6 +162,7 @@ function providerEntry(options: {
   id: string;
   provider: "volcengine" | "deepseek";
   label: string;
+  upstreamModel: string;
   apiKey: string | undefined;
   baseURL: string;
   resolvedAddress: string | undefined;
@@ -144,7 +171,7 @@ function providerEntry(options: {
     id: options.id,
     provider: options.provider,
     label: options.label,
-    upstreamModel: UPSTREAM_MODEL,
+    upstreamModel: options.upstreamModel,
     status: options.apiKey ? "available" : "unavailable",
     ...(options.apiKey ? {} : { reason: "missing_api_key" as const }),
   };
@@ -153,7 +180,7 @@ function providerEntry(options: {
     ...(options.apiKey
       ? {
           client: new DeepSeekClient({
-            model: UPSTREAM_MODEL,
+            model: options.upstreamModel,
             apiKey: options.apiKey,
             baseURL: options.baseURL,
             ...(options.resolvedAddress === undefined

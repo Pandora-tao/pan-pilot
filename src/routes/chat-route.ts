@@ -5,7 +5,11 @@ import type {
 } from "fastify";
 import { z } from "zod";
 import { ChatAgent } from "../agent/chat-agent.js";
-import { MEDIA_ID_PATTERN, type MediaStore } from "../media/media-store.js";
+import {
+  MEDIA_ID_PATTERN,
+  type MediaStore,
+  type StoredMedia,
+} from "../media/media-store.js";
 import type { ModelMessage } from "../model/model-client.js";
 import {
   type ChatModelRegistry,
@@ -13,6 +17,7 @@ import {
   UnsupportedChatModelError,
 } from "../model/model-registry.js";
 import type { ToolRegistry } from "../tools/tool-registry.js";
+import type { ContextManagerOptions } from "../agent/context-manager.js";
 
 // 兼容早期只有 `message` 字段的调用方；完整 `messages` 模式由调用方自行提供上下文。
 const legacySystemMessage: ModelMessage = {
@@ -31,7 +36,7 @@ const modelMessageSchema = z.object({
 const chatAttachmentSchema = z.object({
   // 附件只能引用受控 MediaStore 中的 mediaId，不接受文件路径或远程 URL。
   mediaId: z.string().regex(MEDIA_ID_PATTERN, "mediaId 格式不正确"),
-  kind: z.enum(["image", "audio"]).optional(),
+  kind: z.enum(["image", "audio", "text", "document", "binary"]).optional(),
 }).strict();
 
 const chatRequestSchema = z.object({
@@ -57,7 +62,11 @@ export function registerChatRoute(
   app: FastifyInstance,
   modelRegistry: ChatModelRegistry,
   toolRegistry: ToolRegistry,
-  options: { logChatContent: boolean; mediaStore: MediaStore },
+  options: {
+    logChatContent: boolean;
+    mediaStore: MediaStore;
+    contextOptions?: ContextManagerOptions;
+  },
 ): void {
   app.post("/v1/chat", async (request, reply) => {
     const parsed = chatRequestSchema.safeParse(request.body);
@@ -92,7 +101,9 @@ export function registerChatRoute(
     }
     // 每轮只解析一次模型；固定客户端贯穿后续全部工具步骤，禁止供应商漂移。
     const modelId = selectedModel.descriptor.id;
-    const chatAgent = new ChatAgent(selectedModel.client, toolRegistry);
+    const chatAgent = new ChatAgent(selectedModel.client, toolRegistry, {
+      ...(options.contextOptions === undefined ? {} : { context: options.contextOptions }),
+    });
 
     // 在进入 Agent 层前，把两种 HTTP 请求格式统一成消息数组。
     const baseMessages = parsed.data.messages ?? [
@@ -146,6 +157,7 @@ export function registerChatRoute(
           totalTokens: result.totalTokens ?? null,
           steps: result.steps,
           toolExecutions: result.toolExecutions,
+          context: result.context ?? null,
           durationMs: Date.now() - startedAt,
         }, "PanPilot chat reply");
       }
@@ -160,6 +172,10 @@ export function registerChatRoute(
           mode: "chat",
           // 只返回执行摘要（id/name/status）；原始参数和工具结果可能含敏感数据，不回传 HTTP。
           toolExecutions: result.toolExecutions,
+          ...(result.context === undefined ? {} : { context: result.context }),
+          ...(result.contextMessages === undefined
+            ? {}
+            : { contextMessages: result.contextMessages }),
         },
       };
     } catch (error) {
@@ -183,9 +199,11 @@ interface AttachmentError {
  * 把 attachments 转成强制调用分析工具的 user 提示消息。
  *
  * 上传的媒体必须先存在（受控 mediaId），类型不符立即拒绝；提示消息只含
- * mediaId，不携带媒体字节或 Base64，也不使用「需要时调用」的弱措辞——
- * 必须明确要求：分析该附件之前先调用对应工具（图片 analyze_image；
- * 音频按用户请求选择 transcribe_audio 或 analyze_audio）。
+ * mediaId，不携带媒体字节或 Base64，也不使用「需要时调用」的弱措辞：
+ * - image → 必须先调用 analyze_image；
+ * - audio → 按用户请求调用 transcribe_audio 或 analyze_audio；
+ * - text/document → 必须先调用 read_attachment 读取内容；
+ * - binary → 只能提及文件名/大小/类型，不得编造内容。
  */
 async function resolveAttachments(
   messages: readonly ModelMessage[],
@@ -215,28 +233,43 @@ async function resolveAttachments(
       continue;
     }
 
-    hints.push(kind === "image"
-      ? {
-          role: "user",
-          content:
-            `[附件] 用户上传了一张图片（mediaId: ${attachment.mediaId}）。`
-            + "回答任何与这张图片相关的问题之前，你必须先调用"
-            + ` analyze_image 工具（mediaId: ${attachment.mediaId}）分析该附件，`
-            + "再基于分析结果作答。",
-        }
-      : {
-          role: "user",
-          content:
-            `[附件] 用户上传了一段音频（mediaId: ${attachment.mediaId}）。`
-            + "回答任何与这段音频相关的问题之前，你必须先调用音频工具分析该附件："
-            + `如果用户要求语音转写，调用 transcribe_audio（mediaId: ${attachment.mediaId}）；`
-            + `否则调用 analyze_audio（mediaId: ${attachment.mediaId}）转写并分析`
-            + "说话人、语气与背景声音。",
-        });
+    const hint = attachmentHint(attachment.mediaId, media);
+    hints.push({ role: "user" as const, content: hint });
   }
 
   if (errors.length > 0) return { messages, errors };
   return { messages: [...messages, ...hints], errors: [] };
+}
+
+/** 按附件类型生成强制/限制性提示消息。 */
+function attachmentHint(
+  mediaId: string,
+  media: StoredMedia,
+): string {
+  const kind = media.meta.kind;
+  if (kind === "image") {
+    return `[附件] 用户上传了一张图片（mediaId: ${mediaId}）。`
+      + "回答任何与这张图片相关的问题之前，你必须先调用"
+      + ` analyze_image 工具（mediaId: ${mediaId}）分析该附件，`
+      + "再基于分析结果作答。";
+  }
+  if (kind === "audio") {
+    return `[附件] 用户上传了一段音频（mediaId: ${mediaId}）。`
+      + "回答任何与这段音频相关的问题之前，你必须先调用音频工具分析该附件："
+      + `如果用户要求语音转写，调用 transcribe_audio（mediaId: ${mediaId}）；`
+      + `否则调用 analyze_audio（mediaId: ${mediaId}）转写并分析`
+      + "说话人、语气与背景声音。";
+  }
+  if (kind === "binary") {
+    return `[附件] 用户上传了文件「${media.meta.name}」`
+      + `（${media.meta.size} 字节，类型 ${media.meta.mimeType}）。`
+      + "该附件无法读取内容，回答时只能提及文件名与大小，不得编造内容。";
+  }
+  return `[附件] 用户上传了${kind === "text" ? "一个文本文件" : "一份文档"}`
+    + `「${media.meta.name}」（mediaId: ${mediaId}）。`
+    + "回答任何与该附件相关的问题之前，你必须先调用"
+    + ` read_attachment 工具（mediaId: ${mediaId}）读取该附件的内容，`
+    + "再基于内容作答。";
 }
 
 /**
@@ -282,6 +315,7 @@ async function streamChatReply(
           totalTokens: event.result.totalTokens ?? null,
           steps: event.result.steps,
           toolExecutions: event.result.toolExecutions,
+          context: event.result.context ?? null,
           durationMs: Date.now() - startedAt,
         }, "PanPilot chat reply");
       }

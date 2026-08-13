@@ -135,6 +135,9 @@ export class DeepSeekClient implements ModelClient {
     const body: ChatCompletionCreateParamsNonStreaming = {
       model: this.model,
       messages: request.messages.map(toProviderMessage),
+      ...(request.maxOutputTokens === undefined
+        ? {}
+        : { max_tokens: request.maxOutputTokens }),
       ...(tools.length === 0
         ? {}
         : { tools, tool_choice: "auto" as const }),
@@ -179,6 +182,9 @@ export class DeepSeekClient implements ModelClient {
       model: this.model,
       messages: request.messages.map(toProviderMessage),
       stream: true,
+      ...(request.maxOutputTokens === undefined
+        ? {}
+        : { max_tokens: request.maxOutputTokens }),
       // 兼容 OpenAI 的 usage 汇总：最后一个 chunk 会带完整 token 统计。
       stream_options: { include_usage: true },
       ...(tools.length === 0

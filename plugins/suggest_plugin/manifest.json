@@ -1,0 +1,20 @@
+{
+  "apiVersion": "v1",
+  "name": "suggest_plugin",
+  "description": "向用户推荐一个声明式插件并加入控制台的待安装列表，不会自动安装",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "manifest": {
+        "type": "object",
+        "description": "待推荐的完整插件 manifest"
+      }
+    },
+    "required": ["manifest"],
+    "additionalProperties": false
+  },
+  "executor": {
+    "type": "builtin",
+    "ref": "suggest_plugin"
+  }
+}

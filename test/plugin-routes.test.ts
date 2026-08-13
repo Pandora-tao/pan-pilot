@@ -13,10 +13,8 @@ const AUTH = { authorization: "Bearer test-secret" };
 let fixtureRoot = "";
 
 afterEach(() => {
-  if (fixtureRoot) {
-    removePluginFixture(fixtureRoot);
-    fixtureRoot = "";
-  }
+  if (fixtureRoot) removePluginFixture(fixtureRoot);
+  fixtureRoot = "";
 });
 
 function builtinAliasManifest(name: string, ref: string): Record<string, unknown> {
@@ -34,44 +32,17 @@ function builtinAliasManifest(name: string, ref: string): Record<string, unknown
   };
 }
 
-function fakeModelClient(
-  complete: ModelClient["complete"],
-): ModelClient {
-  return { complete, completeStream: vi.fn() };
-}
-
-/** 不真正走聊天路径的用例只需要一个不会构造真实模型的替身。 */
 function dummyModelClient(): ModelClient {
   return { complete: vi.fn(), completeStream: vi.fn() } as ModelClient;
 }
 
-/** 审批三步走：用已创建的 approvalId 完成 approve + execute。 */
-async function approveAndExecute(
-  app: ReturnType<typeof buildApp>,
-  approvalId: string,
-  hash?: string,
-) {
-  const approve = await app.inject({
-    method: "POST",
-    url: `/v1/plugins/approvals/${approvalId}/approve`,
-    headers: AUTH,
-    payload: hash === undefined ? {} : { hash },
-  });
-  expect(approve.statusCode).toBe(200);
-  const execute = await app.inject({
-    method: "POST",
-    url: `/v1/plugins/approvals/${approvalId}/execute`,
-    headers: AUTH,
-    payload: hash === undefined ? {} : { hash },
-  });
-  return execute;
+function fakeModelClient(complete: ModelClient["complete"]): ModelClient {
+  return { complete, completeStream: vi.fn() };
 }
 
-describe("/v1/plugins", () => {
-  it("requires the bearer token", async () => {
-    fixtureRoot = createPluginFixture({
-      ping: httpManifest("ping", "https://api.example.com/ping"),
-    });
+describe("/v1/plugins direct user management", () => {
+  it("requires the bearer token when configured", async () => {
+    fixtureRoot = createPluginFixture({});
     const app = buildApp({
       apiToken: "test-secret",
       modelClient: dummyModelClient(),
@@ -84,10 +55,36 @@ describe("/v1/plugins", () => {
     await app.close();
   });
 
-  it("lists plugin statuses with per-plugin errors", async () => {
+  it("installs a valid manifest directly and exposes the plugin", async () => {
+    fixtureRoot = createPluginFixture({});
+    const app = buildApp({
+      apiToken: "test-secret",
+      modelClient: dummyModelClient(),
+      pluginsDir: fixtureRoot,
+    });
+
+    const install = await app.inject({
+      method: "POST",
+      url: "/v1/plugins/install",
+      headers: AUTH,
+      payload: { manifest: builtinAliasManifest("calc_alias", "calculator") },
+    });
+
+    expect(install.statusCode).toBe(201);
+    expect(install.json().result).toMatchObject({
+      applied: true,
+      plugins: [expect.objectContaining({ name: "calc_alias", state: "loaded" })],
+    });
+    const list = await app.inject({ method: "GET", url: "/v1/plugins", headers: AUTH });
+    expect(list.json().plugins).toEqual([
+      expect.objectContaining({ name: "calc_alias", enabled: true }),
+    ]);
+    await app.close();
+  });
+
+  it("rejects invalid or conflicting installs without replacing the registry", async () => {
     fixtureRoot = createPluginFixture({
       ping: httpManifest("ping", "https://api.example.com/ping"),
-      broken: "{ 不是 JSON",
     });
     const app = buildApp({
       apiToken: "test-secret",
@@ -96,23 +93,28 @@ describe("/v1/plugins", () => {
       pluginAllowedHosts: "api.example.com",
     });
 
-    const response = await app.inject({
-      method: "GET",
-      url: "/v1/plugins",
+    const conflict = await app.inject({
+      method: "POST",
+      url: "/v1/plugins/install",
       headers: AUTH,
+      payload: { manifest: httpManifest("ping", "https://api.example.com/other") },
     });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toMatchObject({ error: "PLUGIN_CONFLICT" });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      plugins: [
-        expect.objectContaining({ name: "broken", state: "error" }),
-        expect.objectContaining({ name: "ping", state: "loaded" }),
-      ],
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/v1/plugins/install",
+      headers: AUTH,
+      payload: { manifest: httpManifest("bad", "http://api.example.com/insecure") },
     });
+    expect(invalid.statusCode).toBe(400);
+    const list = await app.inject({ method: "GET", url: "/v1/plugins", headers: AUTH });
+    expect(list.json().plugins.map((item: { name: string }) => item.name)).toEqual(["ping"]);
     await app.close();
   });
 
-  it("reload goes through approval and applies atomically after execute", async () => {
+  it("reloads directly and atomically keeps the old registry on failure", async () => {
     fixtureRoot = createPluginFixture({
       ping: httpManifest("ping", "https://api.example.com/ping"),
     });
@@ -126,123 +128,40 @@ describe("/v1/plugins", () => {
     mkdirSync(path.join(fixtureRoot, "calc_alias"));
     writeFileSync(
       path.join(fixtureRoot, "calc_alias", "manifest.json"),
-      JSON.stringify(
-        builtinAliasManifest("calc_alias", "calculator"),
-        null,
-        2,
-      ),
+      JSON.stringify(builtinAliasManifest("calc_alias", "calculator")),
     );
-
-    // 旧接口不再直接生效：返回待审批草案。
-    const draft = await app.inject({
+    const reload = await app.inject({
       method: "POST",
       url: "/v1/plugins/reload",
       headers: AUTH,
     });
-    expect(draft.statusCode).toBe(201);
-    const approval = draft.json().approval;
-    expect(approval).toMatchObject({
-      type: "reload_plugins",
-      status: "pending",
-    });
+    expect(reload.statusCode).toBe(200);
+    expect(reload.json().result.plugins).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "calc_alias" }),
+      expect.objectContaining({ name: "ping" }),
+    ]));
 
-    // 未批准前重载没有生效。
-    const before = await app.inject({
-      method: "GET",
-      url: "/v1/plugins",
+    mkdirSync(path.join(fixtureRoot, "broken"));
+    writeFileSync(path.join(fixtureRoot, "broken", "manifest.json"), "{ oops");
+    const failed = await app.inject({
+      method: "POST",
+      url: "/v1/plugins/reload",
       headers: AUTH,
     });
-    expect(before.json().plugins.map((p: { name: string }) => p.name))
-      .toEqual(["ping"]);
-
-    const execute = await approveAndExecute(app, approval.id, approval.hash);
-
-    expect(execute.statusCode).toBe(200);
-    expect(execute.json()).toMatchObject({
-      result: {
-        applied: true,
-        plugins: [
-          expect.objectContaining({ name: "calc_alias", state: "loaded" }),
-          expect.objectContaining({ name: "ping", state: "loaded" }),
-        ],
-      },
-    });
-
-    const after = await app.inject({
-      method: "GET",
-      url: "/v1/plugins",
-      headers: AUTH,
-    });
-    expect(after.json().plugins.map((p: { name: string }) => p.name))
-      .toEqual(expect.arrayContaining(["calc_alias", "ping"]));
+    expect(failed.statusCode).toBe(500);
+    const list = await app.inject({ method: "GET", url: "/v1/plugins", headers: AUTH });
+    expect(list.json().plugins.map((item: { name: string }) => item.name))
+      .toEqual(["calc_alias", "ping"]);
     await app.close();
   });
 
-  it("keeps the old registry when an approved reload has a failing plugin", async () => {
+  it("enables and disables installed plugins directly", async () => {
     fixtureRoot = createPluginFixture({
-      ping: httpManifest("ping", "https://api.example.com/ping"),
+      calc_alias: builtinAliasManifest("calc_alias", "calculator"),
     });
     const app = buildApp({
       apiToken: "test-secret",
       modelClient: dummyModelClient(),
-      pluginsDir: fixtureRoot,
-      pluginAllowedHosts: "api.example.com",
-    });
-
-    mkdirSync(path.join(fixtureRoot, "broken"));
-    writeFileSync(path.join(fixtureRoot, "broken", "manifest.json"), "{ oops");
-
-    const draft = await app.inject({
-      method: "POST",
-      url: "/v1/plugins/reload",
-      headers: AUTH,
-    });
-    const execute = await approveAndExecute(
-      app,
-      draft.json().approval.id,
-      draft.json().approval.hash,
-    );
-
-    expect(execute.statusCode).toBe(500);
-    expect(execute.json()).toMatchObject({
-      error: "PLUGIN_APPLY_FAILED",
-      details: {
-        statuses: expect.arrayContaining([
-          expect.objectContaining({ name: "broken", state: "error" }),
-          expect.objectContaining({ name: "ping", state: "loaded" }),
-        ]),
-      },
-    });
-
-    // 旧注册表仍在生效：ping 仍可用，新坏插件没有混入。
-    const status = await app.inject({
-      method: "GET",
-      url: "/v1/plugins",
-      headers: AUTH,
-    });
-    expect(status.json().plugins.map((p: { name: string }) => p.name))
-      .toEqual(["ping"]);
-    await app.close();
-  });
-
-  it("disable/enable go through approval and change the chat loop after execute", async () => {
-    fixtureRoot = createPluginFixture({
-      calc_alias: builtinAliasManifest("calc_alias", "calculator"),
-    });
-    const complete = vi.fn<ModelClient["complete"]>()
-      .mockResolvedValueOnce({
-        content: "",
-        toolCalls: [{ id: "c1", name: "calc_alias", arguments: {} }],
-        model: "test-model",
-      })
-      .mockResolvedValueOnce({
-        content: "完成",
-        toolCalls: [],
-        model: "test-model",
-      });
-    const app = buildApp({
-      modelClient: fakeModelClient(complete),
-      apiToken: "test-secret",
       pluginsDir: fixtureRoot,
     });
 
@@ -251,74 +170,121 @@ describe("/v1/plugins", () => {
       url: "/v1/plugins/calc_alias/disable",
       headers: AUTH,
     });
-    expect(disabled.statusCode).toBe(201);
-    expect(disabled.json().approval).toMatchObject({
-      type: "set_plugin_enabled",
-      status: "pending",
-      preview: { summary: "禁用插件 calc_alias" },
-    });
+    expect(disabled.statusCode).toBe(200);
+    expect(disabled.json().plugin).toMatchObject({ state: "disabled", enabled: false });
 
-    const disableExec = await approveAndExecute(
-      app,
-      disabled.json().approval.id,
-      disabled.json().approval.hash,
-    );
-    expect(disableExec.json().result).toMatchObject({
-      plugin: { name: "calc_alias", state: "disabled" },
+    // 模拟进程重启重新装配：disabled 已写回 manifest，不能恢复为默认启用。
+    await app.close();
+    const restarted = buildApp({
+      apiToken: "test-secret",
+      modelClient: dummyModelClient(),
+      pluginsDir: fixtureRoot,
+    });
+    const afterRestart = await restarted.inject({
+      method: "GET",
+      url: "/v1/plugins",
+      headers: AUTH,
+    });
+    expect(afterRestart.json().plugins).toEqual([
+      expect.objectContaining({ name: "calc_alias", state: "disabled", enabled: false }),
+    ]);
+
+    const enabled = await restarted.inject({
+      method: "POST",
+      url: "/v1/plugins/calc_alias/enable",
+      headers: AUTH,
+    });
+    expect(enabled.statusCode).toBe(200);
+    expect(enabled.json().plugin).toMatchObject({ state: "loaded", enabled: true });
+    await restarted.close();
+  });
+
+  it("installs or dismisses Agent suggestions selected by the user", async () => {
+    const suggestedManifest = builtinAliasManifest("calc_alias", "calculator");
+    fixtureRoot = createPluginFixture({
+      suggest_plugin: {
+        apiVersion: "v1",
+        name: "suggest_plugin",
+        description: "推荐插件",
+        parameters: {
+          type: "object",
+          properties: { manifest: { type: "object" } },
+          required: ["manifest"],
+          additionalProperties: false,
+        },
+        executor: { type: "builtin", ref: "suggest_plugin" },
+      },
+    });
+    const complete = vi.fn<ModelClient["complete"]>()
+      .mockResolvedValueOnce({
+        content: "",
+        toolCalls: [{
+          id: "suggest-1",
+          name: "suggest_plugin",
+          arguments: { manifest: suggestedManifest },
+        }],
+        model: "test-model",
+      })
+      .mockResolvedValueOnce({
+        content: "已把插件加入待安装列表，请由你决定是否安装。",
+        toolCalls: [],
+        model: "test-model",
+      });
+    const app = buildApp({
+      apiToken: "test-secret",
+      modelClient: fakeModelClient(complete),
+      pluginsDir: fixtureRoot,
     });
 
     const chat = await app.inject({
       method: "POST",
       url: "/v1/chat",
       headers: AUTH,
-      payload: { message: "算一下" },
+      payload: { message: "推荐一个计算插件" },
     });
     expect(chat.statusCode).toBe(200);
-    expect(chat.json()).toMatchObject({
-      message: "完成",
-      execution: {
-        toolExecutions: [{ id: "c1", name: "calc_alias", status: "error" }],
-      },
-    });
 
-    const enabled = await app.inject({
-      method: "POST",
-      url: "/v1/plugins/calc_alias/enable",
+    const suggestions = await app.inject({
+      method: "GET",
+      url: "/v1/plugins/suggestions",
       headers: AUTH,
     });
-    const enableExec = await approveAndExecute(
-      app,
-      enabled.json().approval.id,
-      enabled.json().approval.hash,
-    );
-    expect(enableExec.json().result).toMatchObject({
-      plugin: { name: "calc_alias", state: "loaded" },
+    expect(suggestions.statusCode).toBe(200);
+    const suggestion = suggestions.json().suggestions[0];
+    expect(suggestion).toMatchObject({
+      preview: { pluginName: "calc_alias", executorType: "builtin" },
     });
+
+    const installed = await app.inject({
+      method: "POST",
+      url: `/v1/plugins/suggestions/${suggestion.id}/install`,
+      headers: AUTH,
+    });
+    expect(installed.statusCode).toBe(201);
+    expect(installed.json().result.plugins).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "calc_alias", state: "loaded" }),
+    ]));
     await app.close();
   });
 
-  it("returns 404 for unknown or malformed plugin names", async () => {
-    fixtureRoot = createPluginFixture({
-      ping: httpManifest("ping", "https://api.example.com/ping"),
-    });
+  it("fails closed for mutations when no API token is configured", async () => {
+    fixtureRoot = createPluginFixture({});
     const app = buildApp({
-      apiToken: "test-secret",
       modelClient: dummyModelClient(),
       pluginsDir: fixtureRoot,
-      pluginAllowedHosts: "api.example.com",
     });
 
-    for (const url of [
-      "/v1/plugins/missing/enable",
-      "/v1/plugins/Bad-Name/disable",
+    for (const request of [
+      { method: "POST" as const, url: "/v1/plugins/reload" },
+      {
+        method: "POST" as const,
+        url: "/v1/plugins/install",
+        payload: { manifest: builtinAliasManifest("calc_alias", "calculator") },
+      },
     ]) {
-      const response = await app.inject({
-        method: "POST",
-        url,
-        headers: AUTH,
-      });
-      expect(response.statusCode).toBe(404);
-      expect(response.json()).toMatchObject({ error: "PLUGIN_NOT_FOUND" });
+      const response = await app.inject(request);
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toMatchObject({ error: "AUTH_NOT_CONFIGURED" });
     }
     await app.close();
   });

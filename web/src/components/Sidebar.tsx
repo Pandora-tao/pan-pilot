@@ -1,9 +1,8 @@
 import {
   Activity,
-  Archive,
-  ClipboardCheck,
   MessageSquare,
   Plug,
+  Clock3,
   Settings,
 } from "lucide-react";
 import type { ViewName } from "../types";
@@ -19,15 +18,13 @@ interface SidebarProps {
 
 const items: Array<{
   view: ViewName;
-  number: string;
   label: string;
   icon: typeof MessageSquare;
 }> = [
-  { view: "chat", number: "01", label: "对话", icon: MessageSquare },
-  { view: "assets", number: "02", label: "资产", icon: Archive },
-  { view: "plugins", number: "03", label: "插件", icon: Plug },
-  { view: "approvals", number: "04", label: "审批", icon: ClipboardCheck },
-  { view: "capabilities", number: "05", label: "能力", icon: Activity },
+  { view: "chat", label: "对话", icon: MessageSquare },
+  { view: "plugins", label: "插件", icon: Plug },
+  { view: "tasks", label: "任务", icon: Clock3 },
+  { view: "capabilities", label: "能力", icon: Activity },
 ];
 
 export function Sidebar({
@@ -43,7 +40,7 @@ export function Sidebar({
       <div className="brand">
         <span className="brand-mark">P.</span>
         <h1>PanPilot 控制台</h1>
-        <p>Agent 运行、资产与插件控制</p>
+        <p>Agent 运行与插件控制</p>
       </div>
 
       <div className="health" title="GET /health">
@@ -57,7 +54,7 @@ export function Sidebar({
       </div>
 
       <nav className="nav" aria-label="控制台导航">
-        {items.map(({ view, number, label, icon: Icon }) => (
+        {items.map(({ view, label, icon: Icon }) => (
           <button
             className={`nav-button ${activeView === view ? "active" : ""}`}
             key={view}
@@ -65,7 +62,6 @@ export function Sidebar({
             aria-current={activeView === view ? "page" : undefined}
             onClick={() => onChangeView(view)}
           >
-            <span className="nav-number">{number}</span>
             <Icon aria-hidden="true" size={17} strokeWidth={1.7} />
             <span className="nav-label">{label}</span>
             {view !== "chat" && (

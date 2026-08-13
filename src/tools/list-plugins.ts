@@ -3,7 +3,7 @@ import type { PluginManager } from "../plugins/plugin-manager.js";
 import type { AnyAgentTool } from "./tool.js";
 
 /**
- * 只读工具：返回脱敏的插件状态列表，不触发任何副作用，不需要审批。
+ * 只读工具：返回脱敏的插件状态列表，不触发任何副作用。
  *
  * 通过闭包延迟引用 PluginManager，避免「管理工具依赖管理器、管理器又依赖
  * 内置工具」的构造环；工具只在实际执行时才解析引用。

@@ -44,10 +44,11 @@ interface PluginEntry {
  *
  * - 启动加载为尽力而为：坏插件跳过并进入状态列表，服务照常启动；
  * - reload 为原子操作：任一插件失败则整体保留旧注册表，本次尝试结果返回给调用方；
- * - enable/disable 只改内存态并重建注册表，不写回 manifest。
+ * - enable/disable 的底层内存切换保留给嵌入调用；HTTP 用户操作由 PluginService
+ *   写回 manifest 后原子重载，以便重启后保持选择。
  */
 export class PluginManager {
-  /** 只读暴露给审批服务做冲突检查与原子写入。 */
+  /** 只读暴露给插件服务做冲突检查与安全写入。 */
   readonly pluginsDir: string;
   private readonly builtinTools: ReadonlyMap<string, AnyAgentTool>;
   private readonly builtinNames: ReadonlySet<string>;
@@ -112,7 +113,7 @@ export class PluginManager {
     return this.toStatuses(this.entries, this.loadErrors);
   }
 
-  /** 按名字查询当前状态（含错误目录），供审批草案做冲突检查。 */
+  /** 按名字查询当前状态（含错误目录），供安装与启停校验。 */
   getStatus(name: string): PluginStatus | undefined {
     return this.listStatuses().find((status) => status.name === name);
   }

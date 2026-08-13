@@ -33,6 +33,25 @@ describe("chat provider configuration", () => {
 });
 
 describe("DeepSeekClient tool protocol", () => {
+  it("forwards a bounded max output token setting", async () => {
+    const createCompletion = vi.fn<CreateChatCompletion>().mockResolvedValue(
+      completion({ content: "摘要", refusal: null, role: "assistant" }, 8),
+    );
+    const client = new DeepSeekClient({ createCompletion, model: "request-model" });
+
+    await client.complete({
+      messages: [{ role: "user", content: "压缩" }],
+      tools: [],
+      maxOutputTokens: 321,
+    });
+
+    expect(createCompletion).toHaveBeenCalledWith({
+      model: "request-model",
+      messages: [{ role: "user", content: "压缩" }],
+      max_tokens: 321,
+    }, undefined);
+  });
+
   it("maps a text completion without exposing tools", async () => {
     const createCompletion = vi.fn<CreateChatCompletion>().mockResolvedValue(
       completion({ content: "  你好  ", refusal: null, role: "assistant" }, 12),

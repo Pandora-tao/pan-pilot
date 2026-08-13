@@ -7,6 +7,7 @@ import {
   MediaStore,
 } from "./media/media-store.js";
 import type { ModelClient } from "./model/model-client.js";
+import type { ContextManagerOptions } from "./agent/context-manager.js";
 import {
   ChatModelRegistry,
   createChatModelRegistry,
@@ -22,26 +23,28 @@ import { registerHealthRoute } from "./routes/health-route.js";
 import { registerMediaRoute } from "./routes/media-route.js";
 import { registerModelsRoute } from "./routes/models-route.js";
 import { BingSearchClient } from "./search/bing-search.js";
-import { InMemoryApprovalStore } from "./plugins/approval-store.js";
+import { registerScheduledTaskRoutes } from "./scheduled-tasks/scheduled-task-routes.js";
+import { ScheduledTaskScheduler } from "./scheduled-tasks/scheduled-task-scheduler.js";
+import { ScheduledTaskStore } from "./scheduled-tasks/scheduled-task-store.js";
 import { PluginManager } from "./plugins/plugin-manager.js";
-import {
-  DEFAULT_APPROVAL_TTL_MS,
-  PluginApprovalService,
-} from "./plugins/plugin-approval-service.js";
+import { PluginService } from "./plugins/plugin-service.js";
 import { registerPluginRoutes } from "./plugins/plugin-routes.js";
 import { createAnalyzeAudioTool } from "./tools/analyze-audio.js";
 import { createAnalyzeImageTool } from "./tools/analyze-image.js";
 import { calculatorTool } from "./tools/calculator.js";
-import { createCreatePluginTool } from "./tools/create-plugin.js";
 import { createCreateWordDocumentTool } from "./tools/create-word-document.js";
+import { dateCalculatorTool } from "./tools/date-calculator.js";
 import { createEditWordDocumentTool } from "./tools/edit-word-document.js";
 import { getCurrentTimeTool } from "./tools/get-current-time.js";
 import { createListPluginsTool } from "./tools/list-plugins.js";
 import type { MultimodalClientProvider } from "./tools/media-common.js";
 import { createReadWordDocumentTool } from "./tools/read-word-document.js";
-import { createReloadPluginsTool } from "./tools/reload-plugins.js";
+import { createReadAttachmentTool } from "./tools/read-attachment.js";
+import { createSuggestPluginTool } from "./tools/suggest-plugin.js";
+import { textStatsTool } from "./tools/text-stats.js";
 import { ToolRegistry } from "./tools/tool-registry.js";
 import { createTranscribeAudioTool } from "./tools/transcribe-audio.js";
+import { unitConverterTool } from "./tools/unit-converter.js";
 import { createWebSearchTool } from "./tools/web-search.js";
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -68,8 +71,6 @@ export interface BuildAppOptions {
   pluginAllowedHosts?: string;
   /** 逗号分隔的允许 ${env:NAME} 引用的环境变量名白名单。 */
   pluginAllowedEnvVars?: string;
-  /** 审批有效期（毫秒），默认取 PAN_PILOT_PLUGIN_APPROVAL_TTL_MINUTES 或 15 分钟。 */
-  pluginApprovalTtlMs?: number;
   /** http 插件执行用的 fetch 实现，测试注入替身。 */
   pluginFetchImpl?: typeof fetch;
   /** 媒体存储目录，默认取 PAN_PILOT_MEDIA_DIR 或 ./media。 */
@@ -80,6 +81,14 @@ export interface BuildAppOptions {
   mediaStore?: MediaStore;
   /** 多模态客户端（图片/音频理解），测试注入假实现；默认懒加载火山方舟实现。 */
   multimodalClient?: MultimodalClient;
+  /** 定时任务持久目录，默认取 PAN_PILOT_SCHEDULED_TASKS_DIR。 */
+  scheduledTasksDir?: string;
+  /** 定时任务执行上限，生产默认 10 分钟；测试可缩短。 */
+  scheduledTaskRunTimeoutMs?: number;
+  /** 测试注入可控时钟。 */
+  scheduledTaskNow?: () => Date;
+  /** 普通聊天和后台任务共用的上下文预算；默认读取环境变量。 */
+  contextOptions?: ContextManagerOptions;
 }
 
 /** 组装应用依赖并注册所有横切能力与路由，但不在这里监听端口。 */
@@ -97,6 +106,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   const apiToken = options.apiToken ?? process.env.PAN_PILOT_API_TOKEN ?? "";
   const logChatContent = options.logChatContent
     ?? isEnabled(process.env.PAN_PILOT_LOG_CHAT_CONTENT);
+  const contextOptions = options.contextOptions ?? contextOptionsFromEnv(process.env);
   const docStore = new DocStore(process.env.PAN_PILOT_DOCS_DIR ?? "./docs");
   const mediaMaxBytes = options.mediaMaxBytes ?? DEFAULT_MEDIA_MAX_BYTES;
   const mediaStore = options.mediaStore
@@ -114,6 +124,9 @@ export function buildApp(options: BuildAppOptions = {}) {
   const builtinTools = [
     calculatorTool,
     getCurrentTimeTool,
+    dateCalculatorTool,
+    unitConverterTool,
+    textStatsTool,
     createCreateWordDocumentTool(docStore),
     createReadWordDocumentTool(docStore),
     createEditWordDocumentTool(docStore),
@@ -121,6 +134,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     createAnalyzeImageTool(mediaStore, multimodalProvider),
     createAnalyzeAudioTool(mediaStore, multimodalProvider),
     createTranscribeAudioTool(mediaStore, multimodalProvider),
+    createReadAttachmentTool(mediaStore),
   ];
   const toolRegistry = new ToolRegistry();
   const pluginsDir = options.pluginsDir
@@ -134,14 +148,14 @@ export function buildApp(options: BuildAppOptions = {}) {
     options.pluginAllowedEnvVars
       ?? process.env.PAN_PILOT_PLUGIN_ALLOWED_ENV_VARS,
   );
-  // 管理工具通过闭包延迟引用管理器/审批服务，打破构造环；
+  // 管理工具通过闭包延迟引用管理器/插件服务，打破构造环；
   // 工具执行发生在 buildApp 组装完成之后，引用必然已就位。
   const managerRef: { current: PluginManager | undefined } = { current: undefined };
-  const serviceRef: { current: PluginApprovalService | undefined } = {
+  const serviceRef: { current: PluginService | undefined } = {
     current: undefined,
   };
-  // 内容内置工具 + 三个管理工具构成同一份完整 builtin 集合，
-  // PluginManager（装载/冲突检查）与 PluginApprovalService（草案构造检查）
+  // 内容内置工具 + 两个只读/建议管理工具构成完整 builtin 集合，
+  // PluginManager（装载）与 PluginService（安装校验）
   // 使用完全一致的集合，避免 builtinNames/refs 在两个边界上漂移。
   const allBuiltinTools = [
     ...builtinTools,
@@ -151,15 +165,9 @@ export function buildApp(options: BuildAppOptions = {}) {
       }
       return managerRef.current;
     }),
-    createCreatePluginTool(() => {
+    createSuggestPluginTool(() => {
       if (serviceRef.current === undefined) {
-        throw new Error("审批服务尚未就绪");
-      }
-      return serviceRef.current;
-    }),
-    createReloadPluginsTool(() => {
-      if (serviceRef.current === undefined) {
-        throw new Error("审批服务尚未就绪");
+        throw new Error("插件服务尚未就绪");
       }
       return serviceRef.current;
     }),
@@ -174,17 +182,30 @@ export function buildApp(options: BuildAppOptions = {}) {
       ? {}
       : { fetchImpl: options.pluginFetchImpl }),
   });
-  const approvalService = new PluginApprovalService({
-    store: new InMemoryApprovalStore(),
+  const pluginService = new PluginService({
     manager: pluginManager,
     builtinTools: allBuiltinTools,
     allowedHosts,
     allowedEnvVars,
-    ttlMs: options.pluginApprovalTtlMs
-      ?? parseApprovalTtlMinutes(process.env.PAN_PILOT_PLUGIN_APPROVAL_TTL_MINUTES),
   });
   managerRef.current = pluginManager;
-  serviceRef.current = approvalService;
+  serviceRef.current = pluginService;
+  const scheduledTaskStore = new ScheduledTaskStore(
+    options.scheduledTasksDir
+      ?? process.env.PAN_PILOT_SCHEDULED_TASKS_DIR
+      ?? "./scheduled-tasks",
+  );
+  const scheduledTaskScheduler = new ScheduledTaskScheduler({
+    store: scheduledTaskStore,
+    modelRegistry,
+    toolRegistry,
+    authConfigured: apiToken !== "",
+    contextOptions,
+    ...(options.scheduledTaskRunTimeoutMs === undefined
+      ? {} : { runTimeoutMs: options.scheduledTaskRunTimeoutMs }),
+    ...(options.scheduledTaskNow === undefined
+      ? {} : { now: options.scheduledTaskNow }),
+  });
   for (const status of pluginManager.loadInitial()) {
     if (status.state === "error") {
       app.log.warn(
@@ -205,7 +226,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     const origin = request.headers.origin;
     if (origin !== undefined && LOCAL_ORIGIN_PATTERN.test(origin)) {
       reply.header("access-control-allow-origin", origin);
-      reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
+      reply.header("access-control-allow-methods", "GET,POST,PUT,DELETE,OPTIONS");
       reply.header("access-control-allow-headers", "authorization, content-type, accept");
       reply.header("vary", "origin");
     }
@@ -236,11 +257,16 @@ export function buildApp(options: BuildAppOptions = {}) {
   registerConsoleRoute(app);
   registerCapabilitiesRoute(app);
   registerModelsRoute(app, modelRegistry);
-  registerChatRoute(app, modelRegistry, toolRegistry, { logChatContent, mediaStore });
-  registerPluginRoutes(app, pluginManager, approvalService, {
-    // 未配置 API token 时，审批执行类接口 fail-closed，不能匿名批准/执行。
-    approvalAuthConfigured: apiToken !== "",
+  registerChatRoute(app, modelRegistry, toolRegistry, {
+    logChatContent,
+    mediaStore,
+    contextOptions,
   });
+  registerPluginRoutes(app, pluginManager, pluginService, {
+    // 未配置 API token 时，插件副作用接口 fail-closed。
+    mutationAuthConfigured: apiToken !== "",
+  });
+  registerScheduledTaskRoutes(app, scheduledTaskScheduler);
   // multipart 的 request.file() 是插件作用域装饰器，文件路由必须在插件子作用域内注册。
   app.register(async (scopedApp) => {
     await scopedApp.register(multipart, {
@@ -248,6 +274,13 @@ export function buildApp(options: BuildAppOptions = {}) {
     });
     registerFilesRoute(scopedApp, docStore);
     registerMediaRoute(scopedApp, mediaStore, mediaMaxBytes);
+  });
+
+  app.addHook("onReady", async () => {
+    await scheduledTaskScheduler.start();
+  });
+  app.addHook("onClose", async () => {
+    await scheduledTaskScheduler.stop();
   });
 
   return app;
@@ -273,9 +306,25 @@ function parseNameList(value: string | undefined): string[] {
     .filter((name) => name.length > 0);
 }
 
-function parseApprovalTtlMinutes(value: string | undefined): number {
-  if (value === undefined) return DEFAULT_APPROVAL_TTL_MS;
-  const minutes = Number(value);
-  if (!Number.isFinite(minutes) || minutes <= 0) return DEFAULT_APPROVAL_TTL_MS;
-  return Math.round(minutes * 60_000);
+function contextOptionsFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): ContextManagerOptions {
+  return {
+    ...optionalPositiveInt(env.PAN_PILOT_CONTEXT_MAX_TOKENS, "PAN_PILOT_CONTEXT_MAX_TOKENS", "maxInputTokens"),
+    ...optionalPositiveInt(env.PAN_PILOT_CONTEXT_TARGET_TOKENS, "PAN_PILOT_CONTEXT_TARGET_TOKENS", "targetInputTokens"),
+    ...optionalPositiveInt(env.PAN_PILOT_CONTEXT_RECENT_TOKENS, "PAN_PILOT_CONTEXT_RECENT_TOKENS", "recentInputTokens"),
+    ...optionalPositiveInt(env.PAN_PILOT_CONTEXT_SUMMARY_MAX_TOKENS, "PAN_PILOT_CONTEXT_SUMMARY_MAX_TOKENS", "summaryMaxTokens"),
+    ...optionalPositiveInt(env.PAN_PILOT_CONTEXT_MAX_MESSAGES, "PAN_PILOT_CONTEXT_MAX_MESSAGES", "maxMessages"),
+  };
+}
+
+function optionalPositiveInt(
+  raw: string | undefined,
+  envName: string,
+  key: keyof ContextManagerOptions,
+): Partial<ContextManagerOptions> {
+  if (raw === undefined || raw.trim() === "") return {};
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) throw new Error(`${envName} 必须是正整数`);
+  return { [key]: value };
 }

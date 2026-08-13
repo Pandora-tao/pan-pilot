@@ -34,6 +34,7 @@ export type ModelMessage =
 export interface ModelRequest {
   messages: readonly ModelMessage[];
   tools: readonly AgentToolDefinition[];
+  maxOutputTokens?: number;
   signal?: AbortSignal;
 }
 

@@ -31,6 +31,8 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/plugins ./plugins
 COPY --from=build /app/web/dist ./web/dist
 
+RUN mkdir -p /app/scheduled-tasks && chown node:node /app/scheduled-tasks
+
 USER node
 
 EXPOSE 3000

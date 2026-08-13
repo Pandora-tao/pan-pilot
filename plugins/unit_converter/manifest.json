@@ -1,0 +1,56 @@
+{
+  "apiVersion": "v1",
+  "name": "unit_converter",
+  "description": "换算常用长度、重量、温度和容量单位；容量中的 cup、fl_oz、gal 使用美制。",
+  "parameters": {
+    "oneOf": [
+      {
+        "type": "object",
+        "properties": {
+          "category": { "type": "string", "const": "length" },
+          "value": { "type": "number" },
+          "from": { "type": "string", "enum": ["mm", "cm", "m", "km", "in", "ft", "yd", "mi"] },
+          "to": { "type": "string", "enum": ["mm", "cm", "m", "km", "in", "ft", "yd", "mi"] }
+        },
+        "required": ["category", "value", "from", "to"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "category": { "type": "string", "const": "mass" },
+          "value": { "type": "number" },
+          "from": { "type": "string", "enum": ["mg", "g", "kg", "oz", "lb"] },
+          "to": { "type": "string", "enum": ["mg", "g", "kg", "oz", "lb"] }
+        },
+        "required": ["category", "value", "from", "to"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "category": { "type": "string", "const": "temperature" },
+          "value": { "type": "number" },
+          "from": { "type": "string", "enum": ["celsius", "fahrenheit", "kelvin"] },
+          "to": { "type": "string", "enum": ["celsius", "fahrenheit", "kelvin"] }
+        },
+        "required": ["category", "value", "from", "to"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "category": { "type": "string", "const": "volume" },
+          "value": { "type": "number" },
+          "from": { "type": "string", "enum": ["ml", "l", "tsp", "tbsp", "cup", "fl_oz", "gal"] },
+          "to": { "type": "string", "enum": ["ml", "l", "tsp", "tbsp", "cup", "fl_oz", "gal"] }
+        },
+        "required": ["category", "value", "from", "to"],
+        "additionalProperties": false
+      }
+    ],
+    "type": "object"
+  },
+  "executor": { "type": "builtin", "ref": "unit_converter" },
+  "enabled": true
+}

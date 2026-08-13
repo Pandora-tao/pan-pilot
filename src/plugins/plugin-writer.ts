@@ -1,6 +1,7 @@
 import {
   linkSync,
   mkdirSync,
+  renameSync,
   readFileSync,
   rmSync,
   rmdirSync,
@@ -120,8 +121,7 @@ export function readPluginManifestRaw(manifestPath: string): string {
 
 /**
  * 插件 manifest 的内容指纹（规范化哈希）。
- * set_plugin_enabled 审批用它绑定「审批时该插件的具体版本」，
- * 执行前若同名插件内容已被替换则拒绝执行。
+ * 为需要校验插件版本的调用方提供规范化内容指纹。
  */
 export function readPluginManifestFingerprint(
   pluginsDir: string,
@@ -130,6 +130,32 @@ export function readPluginManifestFingerprint(
   const raw = readFileSync(path.join(pluginsDir, name, "manifest.json"), "utf8");
   const parsed = JSON.parse(raw) as PluginManifest;
   return createHash("sha256").update(canonicalJson(parsed)).digest("hex");
+}
+
+/** 原子更新 manifest；用于把用户的启用/禁用选择持久化到重启之后。 */
+export function writePluginManifest(
+  pluginsDir: string,
+  manifest: PluginManifest,
+): void {
+  if (!PLUGIN_NAME_PATTERN.test(manifest.name)) {
+    throw new PluginWriteError("WRITE_FAILED", `插件名非法: ${manifest.name}`);
+  }
+  const manifestPath = path.join(pluginsDir, manifest.name, "manifest.json");
+  const tempPath = path.join(
+    pluginsDir,
+    manifest.name,
+    `.manifest-${randomUUID()}.tmp`,
+  );
+  try {
+    writeFileSync(tempPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
+    renameSync(tempPath, manifestPath);
+  } catch (error) {
+    rmSync(tempPath, { force: true });
+    throw new PluginWriteError(
+      "WRITE_FAILED",
+      `更新插件 manifest 失败: ${messageOf(error)}`,
+    );
+  }
 }
 
 function existsDirectory(target: string): boolean {

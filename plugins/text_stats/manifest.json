@@ -1,0 +1,15 @@
+{
+  "apiVersion": "v1",
+  "name": "text_stats",
+  "description": "按可见字素统计文本的字符数、非空白字符数、词数、句数、行数和 UTF-8 字节数。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": { "type": "string", "maxLength": 100000 }
+    },
+    "required": ["text"],
+    "additionalProperties": false
+  },
+  "executor": { "type": "builtin", "ref": "text_stats" },
+  "enabled": true
+}

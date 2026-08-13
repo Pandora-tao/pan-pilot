@@ -1,6 +1,6 @@
 /**
  * 规范化 JSON 序列化（键按字典序），保证语义相同的对象哈希一致，
- * 与属性书写顺序无关，作为审批哈希与目录快照的稳定输入。
+ * 与属性书写顺序无关，作为 manifest 与目录快照的稳定输入。
  */
 export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {

@@ -61,6 +61,9 @@ describe("POST /v1/chat", () => {
       tools: expect.arrayContaining([
         expect.objectContaining({ name: "calculator" }),
         expect.objectContaining({ name: "get_current_time" }),
+        expect.objectContaining({ name: "date_calculator" }),
+        expect.objectContaining({ name: "unit_converter" }),
+        expect.objectContaining({ name: "text_stats" }),
       ]),
     });
   });
@@ -532,6 +535,7 @@ describe("POST /v1/chat", () => {
         chat: { status: "available", streaming: true },
         tools: { status: "available" },
         search: { status: "available" },
+        scheduledTasks: { status: "available" },
         memory: { status: "reserved" },
         planning: { status: "reserved" },
       },
@@ -588,6 +592,65 @@ describe("POST /v1/chat", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: "INVALID_REQUEST" });
     expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("compacts long caller history and returns a safe continuation state", async () => {
+    const complete = vi.fn<ModelClient["complete"]>()
+      .mockResolvedValueOnce({
+        content: "- 用户在准备发布说明\n- 保留约束：中文",
+        toolCalls: [],
+        model: "test-model",
+        totalTokens: 11,
+      })
+      .mockResolvedValueOnce({
+        content: "继续完成发布说明",
+        toolCalls: [],
+        model: "test-model",
+        totalTokens: 5,
+      });
+    const app = buildApp({
+      modelClient: fakeModelClient(complete),
+      contextOptions: {
+        maxInputTokens: 100_000,
+        targetInputTokens: 80_000,
+        recentInputTokens: 10_000,
+        summaryMaxTokens: 128,
+        maxMessages: 8,
+      },
+    });
+    apps.push(app);
+    const messages = [
+      { role: "system" as const, content: "始终用中文" },
+      ...Array.from({ length: 11 }, (_, index) => ({
+        role: index % 2 === 0 ? "user" as const : "assistant" as const,
+        content: `历史消息 ${index}`,
+      })),
+    ];
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/chat",
+      payload: { messages },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      message: "继续完成发布说明",
+      usage: { totalTokens: 16 },
+      execution: {
+        context: { compactions: 1, summarizedMessages: 3 },
+        contextMessages: expect.arrayContaining([
+          { role: "system", content: "始终用中文" },
+          { role: "system", content: expect.stringContaining("context summary v1") },
+        ]),
+      },
+    });
+    expect(JSON.stringify(response.json())).not.toContain("toolCalls");
+    expect(complete.mock.calls[0]?.[0]).toMatchObject({ tools: [], maxOutputTokens: 128 });
+    expect(complete.mock.calls[1]?.[0].messages).toContainEqual({
+      role: "system",
+      content: expect.stringContaining("用户在准备发布说明"),
+    });
   });
 });
 

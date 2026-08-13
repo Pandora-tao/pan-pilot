@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-PanPilot 是一个用于学习和实现 AI Agent 的 TypeScript 工作区，提供 Fastify HTTP 服务。当前已实现带工具循环和 SSE 流式输出的聊天生成（白名单工具、最大轮次控制、取消信号）、声明式插件框架与 Agent 自服务插件闭环（`list_plugins`/`create_plugin`/`reload_plugins` 工具 + HTTP 审批协议：存储边界深拷贝与执行前重新哈希防篡改、hash 必填、未配置 API token 时审批执行接口 fail-closed、reload 绑定插件目录快照，见 `src/plugins/`）；记忆与规划是后续能力（当前状态见 `src/agent/capabilities.ts` 的 `reserved` 声明）。
+PanPilot 是一个用于学习和实现 AI Agent 的 TypeScript 工作区，提供 Fastify HTTP 服务。当前已实现带工具循环和 SSE 流式输出的聊天生成、声明式插件框架与单用户插件管理：Agent 通过 `suggest_plugin` 生成待安装建议，用户自行安装、忽略、启用、禁用和重载；副作用接口要求配置 API token，安装保持 manifest 校验、create-only 写入、原子重载与失败回滚。记忆与规划是后续能力。
 
 ## 常用命令
 
@@ -33,9 +33,9 @@ src/app.ts       buildApp(options)：组装依赖 + 注册路由，不监听端�
 src/routes/      HTTP 适配层：校验、鉴权、状态码、日志，不含厂商细节
 src/agent/       应用层：ChatAgent 会话控制与工具循环
 src/model/       模型适配端口与实现
-src/tools/       工具定义、白名单注册、校验与执行（含 list_plugins/create_plugin）
+src/tools/       工具定义、白名单注册、校验与执行（含 list_plugins/suggest_plugin）
 src/plugins/     插件框架：manifest 校验、加载器、http 执行器、生命周期管理、
-                 审批存储与自服务闭环编排（approval-store / plugin-approval-service）
+                 用户安装建议与直接管理（plugin-service / plugin-routes）
 src/docs/        docx 存储（DocStore）与读写/编辑引擎（word-editor）
 src/search/      搜索提供端口（SearchClient）与 Bing 实现
 ```
@@ -88,7 +88,7 @@ const response = await app.inject({ method: "POST", url: "/v1/chat", payload: { 
 ## 环境变量
 
 `DEEPSEEK_API_KEY` 必填（缺失时 `DeepSeekClient` 构造函数直接抛错）。`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`（默认 `deepseek-v4-flash`）、`DEEPSEEK_RESOLVED_ADDRESS`（只覆盖 DeepSeek 主机的 DNS 解析结果，URL 域名保留以维持 Host/TLS SNI/证书校验）、`PAN_PILOT_API_TOKEN`（/v1 路由 Bearer 鉴权，用 `timingSafeEqual` 常时比较）、`PAN_PILOT_DOCS_DIR`（docx 存储目录，默认 `./docs`）、`SEARCH_BASE_URL`（搜索端点，默认 Bing）、`HOST`/`PORT`。完整清单见 `.env.example`；不要提交 `.env`。
-插件相关：`PAN_PILOT_PLUGINS_DIR`（插件目录）、`PAN_PILOT_PLUGIN_ALLOWED_HOSTS`（http 插件 host 白名单，默认拒绝）、`PAN_PILOT_PLUGIN_ALLOWED_ENV_VARS`（${env:NAME} 引用白名单，默认拒绝）、`PAN_PILOT_PLUGIN_APPROVAL_TTL_MINUTES`（审批有效期，默认 15 分钟）。
+插件相关：`PAN_PILOT_PLUGINS_DIR`（插件目录）、`PAN_PILOT_PLUGIN_ALLOWED_HOSTS`（http 插件 host 白名单，默认拒绝）、`PAN_PILOT_PLUGIN_ALLOWED_ENV_VARS`（${env:NAME} 引用白名单，默认拒绝）。
 
 ## 构建与部署
 

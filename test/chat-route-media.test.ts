@@ -87,6 +87,89 @@ describe("chat attachments", () => {
     expect(hint).not.toContain("需要时调用");
   });
 
+  it("injects a mandatory read_attachment hint for a text attachment", async () => {
+    const complete = vi.fn<ModelClient["complete"]>().mockResolvedValue({
+      content: "我先读取附件",
+      toolCalls: [],
+      model: "test-model",
+    });
+    const app = buildWithFakeModel(complete);
+    const mediaId = await uploadMedia(app, Buffer.from("第一行\n第二行"), "notes.txt");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/chat",
+      headers: AUTH,
+      payload: {
+        message: "总结一下这个附件",
+        attachments: [{ mediaId, kind: "text" }],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const hint = complete.mock.calls[0]![0].messages.at(-1)?.content ?? "";
+    expect(hint).toContain(`mediaId: ${mediaId}`);
+    expect(hint).toContain("必须先调用");
+    expect(hint).toContain("read_attachment");
+    expect(JSON.stringify(response.json())).not.toContain(mediaId);
+  });
+
+  it("injects a mandatory read_attachment hint for a pdf attachment", async () => {
+    const complete = vi.fn<ModelClient["complete"]>().mockResolvedValue({
+      content: "我先读取文档",
+      toolCalls: [],
+      model: "test-model",
+    });
+    const app = buildWithFakeModel(complete);
+    const mediaId = await uploadMedia(app, Buffer.from("%PDF-1.4\n% minimal"), "report.pdf");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/chat",
+      headers: AUTH,
+      payload: {
+        message: "看看这个报告",
+        attachments: [{ mediaId }],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const hint = complete.mock.calls[0]![0].messages.at(-1)?.content ?? "";
+    expect(hint).toContain("read_attachment");
+    expect(hint).toContain(`mediaId: ${mediaId}`);
+  });
+
+  it("injects a metadata-only hint for a binary attachment", async () => {
+    const complete = vi.fn<ModelClient["complete"]>().mockResolvedValue({
+      content: "收到",
+      toolCalls: [],
+      model: "test-model",
+    });
+    const app = buildWithFakeModel(complete);
+    const mediaId = await uploadMedia(
+      app,
+      Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x80]),
+      "archive.bin",
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/chat",
+      headers: AUTH,
+      payload: {
+        message: "这个附件是什么",
+        attachments: [{ mediaId }],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const hint = complete.mock.calls[0]![0].messages.at(-1)?.content ?? "";
+    expect(hint).toContain("archive.bin");
+    expect(hint).toContain("无法读取内容");
+    expect(hint).toContain("不得编造内容");
+    expect(hint).not.toContain("read_attachment");
+  });
+
   it("rejects unknown media ids before calling the model", async () => {
     const complete = vi.fn<ModelClient["complete"]>();
     const app = buildWithFakeModel(complete);

@@ -10,3 +10,7 @@ coverage/
 .DS_Store
 # 运行时 docx 存储目录（PAN_PILOT_DOCS_DIR 默认值），不提交生成文件
 docs/
+# 运行时媒体存储目录（PAN_PILOT_MEDIA_DIR 默认值），不提交生成文件
+media/
+# Runtime scheduled-task state (PAN_PILOT_SCHEDULED_TASKS_DIR default).
+/scheduled-tasks/

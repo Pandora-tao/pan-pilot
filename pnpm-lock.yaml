@@ -11,12 +11,18 @@ importers:
       '@fastify/multipart':
         specifier: ^10.1.0
         version: 10.1.0
+      cron-parser:
+        specifier: ^5.8.1
+        version: 5.8.1
       docx:
         specifier: ^9.7.1
         version: 9.7.1
       fastify:
         specifier: ^5.10.0
         version: 5.10.0
+      gsap:
+        specifier: ^3.15.0
+        version: 3.15.0
       jszip:
         specifier: ^3.10.1
         version: 3.10.1
@@ -35,6 +41,9 @@ importers:
       undici:
         specifier: ^8.9.0
         version: 8.9.0
+      unpdf:
+        specifier: ^1.8.0
+        version: 1.8.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -602,6 +611,10 @@ packages:
   core-util-is@1.0.3:
     resolution: {integrity: sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ==}
 
+  cron-parser@5.8.1:
+    resolution: {integrity: sha512-fVw5nGEkTVmiPKo3fY0j28Thq6jR00VKWyL22llWrsbII4sDHI+8Kx1kcL+QzGQJfCfk64bbMotrgTZRpzYpLQ==}
+    engines: {node: '>=18'}
+
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
 
@@ -691,6 +704,9 @@ packages:
   get-east-asian-width@1.6.0:
     resolution: {integrity: sha512-QRbvDIbx6YklUe6RxeTeleMR0yv3cYH6PsPZHcnVn7xv7zO1BHN8r0XETu8n6Ye3Q+ahtSarc3WgtNWmehIBfA==}
     engines: {node: '>=18'}
+
+  gsap@3.15.0:
+    resolution: {integrity: sha512-dMW4CWBTUK1AEEDeZc1g4xpPGIrSf9fJF960qbTZmN/QwZIWY5wgliS6JWl9/25fpTGJrMRtSjGtOmPnfjZB+A==}
 
   hash.js@1.1.7:
     resolution: {integrity: sha512-taOaskGt4z4SOANNseOviYDvjEJinIkRgmp7LbKP2YTTmVxWBl87s/uzK9r+44BclBSp2X7K1hqeNfz9JbBeXA==}
@@ -801,6 +817,10 @@ packages:
     resolution: {integrity: sha512-G8u2eEtoHUnUa9f8lbvqDhCiORMnYLdUEo06EEG9MQvHQrInKcX3Pa2TH39MM5qyzRcWETxB0+aOwAPI1g1kEg==}
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  luxon@3.7.2:
+    resolution: {integrity: sha512-vtEhXh/gNjI9Yg1u4jX/0YVPMvxzHuGgCm6tC5kZyb08yjGWGnqAjGJvcXbqQR2P3MyMEFnRbpcdFS6PBcLqew==}
+    engines: {node: '>=12'}
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -1048,6 +1068,15 @@ packages:
   undici@8.9.0:
     resolution: {integrity: sha512-aWZpUj7XoGonMClx4gdDRfgBjqeA+F473aDmROQQbM9n6PRfK/u1q/a0X4wMTgcHfT8H6fpbt98PFuDUwFg2YA==}
     engines: {node: '>=22.19.0'}
+
+  unpdf@1.8.0:
+    resolution: {integrity: sha512-jQlkckbe5nKxRHQdbvo9IKHlU6Cjq00UlxxB8lrCIxvS2o5IbAL1wM+4a1Yc3+BIohg9p5AsoaftwO+G4Aq/qQ==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      '@napi-rs/canvas': ^0.1.69 || ^1.0.0
+    peerDependenciesMeta:
+      '@napi-rs/canvas':
+        optional: true
 
   util-deprecate@1.0.2:
     resolution: {integrity: sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==}
@@ -1516,6 +1545,10 @@ snapshots:
 
   core-util-is@1.0.3: {}
 
+  cron-parser@5.8.1:
+    dependencies:
+      luxon: 3.7.2
+
   csstype@3.2.3: {}
 
   dequal@2.0.3: {}
@@ -1634,6 +1667,8 @@ snapshots:
 
   get-east-asian-width@1.6.0: {}
 
+  gsap@3.15.0: {}
+
   hash.js@1.1.7:
     dependencies:
       inherits: 2.0.4
@@ -1722,6 +1757,8 @@ snapshots:
   lucide-react@1.31.0(react@19.2.8):
     dependencies:
       react: 19.2.8
+
+  luxon@3.7.2: {}
 
   magic-string@0.30.21:
     dependencies:
@@ -1943,6 +1980,8 @@ snapshots:
   undici-types@8.3.0: {}
 
   undici@8.9.0: {}
+
+  unpdf@1.8.0: {}
 
   util-deprecate@1.0.2: {}
 

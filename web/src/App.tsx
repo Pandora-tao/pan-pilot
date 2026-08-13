@@ -1,21 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { gsap } from "gsap";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ApiClient } from "./api";
+import { withMotion } from "./animations";
 import { Modal } from "./components/Modal";
 import { Sidebar } from "./components/Sidebar";
-import { ApprovalsView } from "./features/approvals/ApprovalsView";
-import { AssetsView } from "./features/assets/AssetsView";
 import { CapabilitiesView } from "./features/capabilities/CapabilitiesView";
 import { ChatView } from "./features/chat/ChatView";
 import { PluginsView } from "./features/plugins/PluginsView";
+import { TasksView } from "./features/tasks/TasksView";
 import { chooseModelId } from "./model-selection";
 import type {
-  Approval,
   CapabilitiesResponse,
   ConsoleSettings,
-  FileAsset,
   MediaAsset,
   ModelsResponse,
   PluginStatus,
+  PluginSuggestion,
   ViewName,
 } from "./types";
 
@@ -41,23 +41,53 @@ export function App() {
   const [modelCatalog, setModelCatalog] = useState<ModelsResponse | null>(null);
   const [selectedModelId, setSelectedModelId] = useState(initial.selectedModelId ?? "");
   const [plugins, setPlugins] = useState<PluginStatus[]>([]);
-  const [approvals, setApprovals] = useState<Approval[]>([]);
-  const [files, setFiles] = useState<FileAsset[]>([]);
+  const [pluginSuggestions, setPluginSuggestions] = useState<PluginSuggestion[]>([]);
+  const [taskCount, setTaskCount] = useState(0);
   const [media, setMedia] = useState<MediaAsset[]>([]);
   const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(new Set());
   const [chatDraft, setChatDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [approvalPrompt, setApprovalPrompt] = useState<{
-    approval: Approval;
-    title: string;
-  } | null>(null);
   const [toastMessage, setToastMessage] = useState("");
   const [directUpload, setDirectUpload] = useState(false);
   const mediaInput = useRef<HTMLInputElement>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
   const client = useMemo(
     () => new ApiClient(settings.baseUrl, settings.token),
     [settings],
   );
+
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    return withMotion(() => {
+      const view = workspace.querySelector<HTMLElement>(".view");
+      if (!view) return;
+      gsap.fromTo(
+        view,
+        { autoAlpha: 0, y: 14 },
+        {
+          autoAlpha: 1,
+          y: 0,
+          duration: 0.42,
+          ease: "power3.out",
+          clearProps: "transform,opacity,visibility",
+        },
+      );
+      gsap.fromTo(
+        Array.from(view.children),
+        { autoAlpha: 0, y: 10 },
+        {
+          autoAlpha: 1,
+          y: 0,
+          duration: 0.38,
+          stagger: 0.06,
+          delay: 0.05,
+          ease: "power2.out",
+          clearProps: "transform,opacity,visibility",
+        },
+      );
+    });
+  }, [activeView]);
 
   const toast = useCallback((message: string) => {
     setToastMessage(message);
@@ -93,11 +123,11 @@ export function App() {
     }
   }, [client, toast]);
 
-  const refreshApprovals = useCallback(async () => {
+  const refreshPluginSuggestions = useCallback(async () => {
     try {
-      setApprovals(await client.approvals());
+      setPluginSuggestions(await client.pluginSuggestions());
     } catch (error) {
-      toast("审批记录获取失败：" + errorMessage(error));
+      toast("待安装插件获取失败：" + errorMessage(error));
     }
   }, [client, toast]);
 
@@ -128,10 +158,10 @@ export function App() {
     void refreshCapabilities();
     void refreshModels();
     void refreshPlugins();
-    void refreshApprovals();
+    void refreshPluginSuggestions();
     const timer = window.setInterval(() => void checkHealth(), 15_000);
     return () => window.clearInterval(timer);
-  }, [checkHealth, refreshApprovals, refreshCapabilities, refreshModels, refreshPlugins]);
+  }, [checkHealth, refreshCapabilities, refreshModels, refreshPluginSuggestions, refreshPlugins]);
 
   function toggleMedia(mediaId: string) {
     setSelectedMediaIds((current) => {
@@ -148,7 +178,7 @@ export function App() {
       const uploaded = await client.uploadMedia(file);
       setMedia((current) => [uploaded, ...current]);
       setSelectedMediaIds((current) => new Set(current).add(uploaded.mediaId));
-      toast("媒体已上传并添加到本次对话");
+      toast("附件已上传并添加到本次对话");
     } catch (error) {
       toast("上传失败：" + errorMessage(error));
     } finally {
@@ -157,25 +187,9 @@ export function App() {
     }
   }
 
-  async function confirmApproval() {
-    if (!approvalPrompt) return;
-    try {
-      await client.approve(approvalPrompt.approval);
-      await client.execute(approvalPrompt.approval);
-      setApprovalPrompt(null);
-      await Promise.all([refreshApprovals(), refreshPlugins()]);
-      toast("审批动作已执行");
-    } catch (error) {
-      toast("审批执行失败：" + errorMessage(error));
-    }
-  }
-
   const counts = {
-    assets: files.length + media.length,
     plugins: plugins.length,
-    approvals: approvals.filter(({ status }) => (
-      status === "pending" || status === "approved"
-    )).length,
+    tasks: taskCount,
     capabilities: Object.keys(capabilities?.capabilities ?? {}).length,
   };
 
@@ -190,7 +204,7 @@ export function App() {
           baseUrl={settings.baseUrl}
           counts={counts}
         />
-        <main className={`workspace workspace-${activeView}`}>
+        <main ref={workspaceRef} className={`workspace workspace-${activeView}`}>
           {activeView === "chat" && (
             <ChatView
               client={client}
@@ -203,24 +217,7 @@ export function App() {
               onModelChange={setSelectedModelId}
               onRequestMediaUpload={() => mediaInput.current?.click()}
               onToggleMedia={toggleMedia}
-              onClearSelected={() => setSelectedMediaIds(new Set())}
               onSent={() => setSelectedMediaIds(new Set())}
-              toast={toast}
-            />
-          )}
-          {activeView === "assets" && (
-            <AssetsView
-              client={client}
-              files={files}
-              media={media}
-              selectedMediaIds={selectedMediaIds}
-              onFilesChange={setFiles}
-              onMediaChange={setMedia}
-              onToggleMedia={toggleMedia}
-              onUseDocument={(fileId) => {
-                setChatDraft(`请读取文档 ${fileId} 并总结内容；如需要，再修改一处可以改进的文字。`);
-                setActiveView("chat");
-              }}
               toast={toast}
             />
           )}
@@ -228,18 +225,20 @@ export function App() {
             <PluginsView
               client={client}
               plugins={plugins}
-              refresh={refreshPlugins}
-              requestApproval={(approval, title) => setApprovalPrompt({ approval, title })}
+              suggestions={pluginSuggestions}
+              refresh={() => Promise.all([
+                refreshPlugins(),
+                refreshPluginSuggestions(),
+              ]).then(() => undefined)}
               toast={toast}
             />
           )}
-          {activeView === "approvals" && (
-            <ApprovalsView
+          {activeView === "tasks" && (
+            <TasksView
               client={client}
-              approvals={approvals}
-              refresh={refreshApprovals}
-              requestApproval={(approval, title) => setApprovalPrompt({ approval, title })}
+              modelCatalog={modelCatalog}
               toast={toast}
+              onCountChange={setTaskCount}
             />
           )}
           {activeView === "capabilities" && (
@@ -253,7 +252,6 @@ export function App() {
         type="file"
         hidden
         disabled={directUpload}
-        accept=".png,.jpg,.jpeg,.webp,.gif,.mp3,.wav,image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/wav"
         onChange={(event) => {
           const file = event.target.files?.[0];
           if (file) void uploadFromChat(file);
@@ -275,38 +273,6 @@ export function App() {
           toast("本地设置已清除");
         }}
       />
-
-      <Modal
-        open={approvalPrompt !== null}
-        title={approvalPrompt?.title ?? "确认审批"}
-        onClose={() => setApprovalPrompt(null)}
-        footer={(
-          <>
-            <button type="button" onClick={() => setApprovalPrompt(null)}>取消</button>
-            <button className="primary" type="button" onClick={() => void confirmApproval()}>
-              批准并执行
-            </button>
-          </>
-        )}
-      >
-        {approvalPrompt && (
-          <>
-            <strong>{approvalPrompt.approval.preview.summary}</strong>
-            <div className="preview-block">
-              <h3>影响</h3>
-              <ul>
-                {approvalPrompt.approval.preview.changes.map((change) => (
-                  <li key={change}>{change}</li>
-                ))}
-              </ul>
-            </div>
-            <div className="preview-block">
-              <h3>风险</h3>
-              <p>{approvalPrompt.approval.preview.riskSummary}</p>
-            </div>
-          </>
-        )}
-      </Modal>
 
       <div className={`toast ${toastMessage ? "show" : ""}`} role="status" aria-live="polite">
         {toastMessage}
@@ -398,9 +364,8 @@ function loadStoredState(): StoredConsoleState {
 
 function isViewName(value: unknown): value is ViewName {
   return value === "chat"
-    || value === "assets"
     || value === "plugins"
-    || value === "approvals"
+    || value === "tasks"
     || value === "capabilities";
 }
 

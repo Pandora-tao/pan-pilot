@@ -2,20 +2,21 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { assertDocxStructure, isDocxMagic } from "../docs/word-editor.js";
 
-/** 媒体 ID 白名单：只允许 URL 安全字符，从根上挡住路径穿越。 */
+/** 附件 ID 白名单：只允许 URL 安全字符，从根上挡住路径穿越。 */
 export const MEDIA_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
 
-export type MediaKind = "image" | "audio";
+export type MediaKind = "image" | "audio" | "text" | "document" | "binary";
 
 export interface StoredMediaMeta {
   /** 上传时的原始文件名（已规范化到 basename，不包含路径）。 */
   name: string;
   size: number;
   kind: MediaKind;
-  /** 由魔数检测得到的 MIME 类型，不信任客户端声明。 */
+  /** 由内容检测（魔数/UTF-8/扩展名）得到的 MIME 类型，不信任客户端声明。 */
   mimeType: string;
-  /** 规范化扩展名（如 png / jpeg / mp3）。 */
+  /** 规范化扩展名（如 png / jpeg / mp3 / pdf / docx / txt / bin）。 */
   extension: string;
   createdAt: string;
 }
@@ -50,10 +51,9 @@ export class MediaStoreError extends Error {
 export const DEFAULT_MEDIA_MAX_BYTES = 10 * 1024 * 1024;
 
 /**
- * 文件扩展名到规范化类型的映射；jpg/jpeg 都归一到 jpeg。
- * 同时是 read() 读取边车元数据时的扩展名固定白名单：
- * 任何不在此集合内的扩展名都被视为篡改，防止被改写的 meta.extension
- * 构造越界文件路径。
+ * 魔数可识别格式的扩展名到规范化类型映射；jpg/jpeg 都归一到 jpeg。
+ * 这些格式的扩展名必须与文件内容一致（防伪装/多态文件）；
+ * text/binary 不在此映射内，扩展名只影响 MIME 与存储文件名。
  */
 const EXTENSION_TO_TYPE: Record<string, string> = {
   png: "png",
@@ -63,7 +63,78 @@ const EXTENSION_TO_TYPE: Record<string, string> = {
   gif: "gif",
   mp3: "mp3",
   wav: "wav",
+  pdf: "pdf",
+  docx: "docx",
 };
+
+/** 文本类扩展名白名单：内容必须同时是合法 UTF-8 才归为 text。 */
+const TEXT_EXTENSIONS = new Set([
+  "txt",
+  "md",
+  "markdown",
+  "json",
+  "jsonl",
+  "csv",
+  "tsv",
+  "log",
+  "yaml",
+  "yml",
+  "xml",
+  "html",
+  "htm",
+  "css",
+  "js",
+  "mjs",
+  "cjs",
+  "ts",
+  "tsx",
+  "jsx",
+  "py",
+  "java",
+  "go",
+  "rs",
+  "sh",
+  "bash",
+  "zsh",
+  "c",
+  "h",
+  "cc",
+  "cpp",
+  "hpp",
+  "sql",
+  "ini",
+  "toml",
+  "cfg",
+  "conf",
+  "properties",
+  "env",
+]);
+
+/** 文本扩展名到 MIME 的映射；未列出的文本统一 text/plain。 */
+const TEXT_MIME_TYPES: Record<string, string> = {
+  md: "text/markdown",
+  markdown: "text/markdown",
+  json: "application/json",
+  jsonl: "application/jsonl",
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
+  yaml: "application/yaml",
+  yml: "application/yaml",
+  xml: "application/xml",
+  html: "text/html",
+  htm: "text/html",
+  css: "text/css",
+  js: "text/javascript",
+  mjs: "text/javascript",
+  cjs: "text/javascript",
+};
+
+/** 存储文件扩展名的安全形状：只允许小写字母数字，从根上杜绝路径穿越。 */
+const SAFE_EXTENSION_PATTERN = /^[a-z0-9]{1,16}$/;
+
+const PDF_MIME = "application/pdf";
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const BINARY_MIME = "application/octet-stream";
 
 const KNOWN_MIME_TYPES = new Set([
   "image/png",
@@ -72,6 +143,11 @@ const KNOWN_MIME_TYPES = new Set([
   "image/gif",
   "audio/mpeg",
   "audio/wav",
+  "text/plain",
+  PDF_MIME,
+  DOCX_MIME,
+  BINARY_MIME,
+  ...Object.values(TEXT_MIME_TYPES),
 ]);
 
 /**
@@ -79,20 +155,20 @@ const KNOWN_MIME_TYPES = new Set([
  *
  * 文件系统上的 JSON 是可篡改输入，与 HTTP 请求体同等对待：
  * kind/mimeType/extension/size/name 全部显式校验，extension 必须是
- * EXTENSION_TO_TYPE 白名单成员，拒绝任何含路径分隔符或目录穿越的写法。
+ * 安全字母数字形状，拒绝任何含路径分隔符或目录穿越的写法。
  */
 const storedMediaMetaSchema = z.object({
   name: z.string().min(1).max(512)
     .refine((name) => path.basename(name) === name, "name 必须是不含路径的文件名"),
   size: z.number().int().nonnegative(),
-  kind: z.enum(["image", "audio"]),
+  kind: z.enum(["image", "audio", "text", "document", "binary"]),
   mimeType: z.string().refine(
     (mimeType) => KNOWN_MIME_TYPES.has(mimeType),
     "mimeType 不在受支持集合内",
   ),
   extension: z.string().refine(
-    (extension) => EXTENSION_TO_TYPE[extension] !== undefined,
-    "extension 不在固定白名单内",
+    (extension) => SAFE_EXTENSION_PATTERN.test(extension),
+    "extension 不是安全文件名",
   ),
   createdAt: z.string().datetime({ offset: true }),
 }).strict();
@@ -116,9 +192,17 @@ const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
 const MP3_ID3_MAGIC = Buffer.from([0x49, 0x44, 0x33]);
 
 /**
- * 受控媒体存储：上传内容必须先通过扩展名与魔数校验，工具只能通过 mediaId 访问。
+ * 受控附件存储：上传内容先通过内容检测（魔数/UTF-8）与扩展名校验，
+ * 工具只能通过 mediaId 访问，绝不接受文件路径或远程 URL。
  *
- * 布局：<root>/media/<mediaId>.<extension> + <mediaId>.json（元数据边车文件）。
+ * 类型规则：
+ * - image/audio/document（pdf/docx）：由魔数判定，扩展名必须与内容一致；
+ * - text：内容为合法 UTF-8（扩展名为空或属于文本白名单）；
+ * - 其余一律 binary（application/octet-stream），只提供元信息。
+ *
+ * 布局：<root>/media/<mediaId>.<extension> + <mediaId>.meta.json（元数据边车）。
+ * 边车名带点号，与任何内容扩展名（纯字母数字）都不可能冲突，
+ * 因此 JSON 附件（扩展名 json）也不会覆盖自己的边车。
  */
 export class MediaStore {
   private readonly maxBytes: number;
@@ -138,32 +222,44 @@ export class MediaStore {
   /** 校验并落盘；文件名只取 basename，扩展名必须与魔数检测结果一致。 */
   async save(buffer: Buffer, originalName: string) {
     if (buffer.length === 0) {
-      throw new MediaStoreError("INVALID_MEDIA", "文件内容为空");
+      throw new MediaStoreError("INVALID_MEDIA", "附件内容为空");
     }
     if (buffer.length > this.maxBytes) {
       throw new MediaStoreError(
         "MEDIA_TOO_LARGE",
-        `媒体不能超过 ${this.maxBytes} 字节`,
-      );
-    }
-
-    const detected = detectMedia(buffer);
-    if (detected === undefined) {
-      throw new MediaStoreError(
-        "INVALID_MEDIA",
-        "文件内容不是受支持的图片或音频",
+        `附件不能超过 ${this.maxBytes} 字节`,
       );
     }
 
     // 文件名里即使带路径也只保留 basename，且扩展名必须与内容一致。
     const name = path.basename(originalName);
     const extension = fileExtension(name);
-    if (EXTENSION_TO_TYPE[extension] !== detected.extension) {
+    const detected = detectAttachment(buffer, extension);
+    if (detected === undefined) {
+      throw new MediaStoreError(
+        "INVALID_MEDIA",
+        "附件内容无法识别",
+      );
+    }
+    // 魔数可识别格式：扩展名必须与内容一致（防止伪装/多态文件）。
+    if (
+      detected.kind !== "text"
+      && detected.kind !== "binary"
+      && EXTENSION_TO_TYPE[extension] !== detected.extension
+    ) {
       throw new MediaStoreError(
         "UNSUPPORTED_EXTENSION",
         `扩展名 .${extension === "" ? "(无)" : extension} 与文件内容`
         + `（${detected.extension}）不一致或不受支持`,
       );
+    }
+    // docx 魔数只证明是 zip 容器；结构必须包含必需的包条目。
+    if (detected.kind === "document" && detected.extension === "docx") {
+      try {
+        await assertDocxStructure(buffer);
+      } catch {
+        throw new MediaStoreError("INVALID_MEDIA", "文件内容不是有效的 docx");
+      }
     }
 
     const mediaId = randomUUID();
@@ -179,6 +275,11 @@ export class MediaStore {
     return { mediaId, ...meta };
   }
 
+  /** 边车文件名：带点号，与任何内容扩展名（纯字母数字）互斥。 */
+  private sidecarName(mediaId: string): string {
+    return `${mediaId}.meta.json`;
+  }
+
   /**
    * 读取受控媒体。
    *
@@ -191,9 +292,13 @@ export class MediaStore {
     const mediaDir = this.mediaDir();
 
     const metaRaw = await readFile(
-      path.join(mediaDir, `${mediaId}.json`),
+      path.join(mediaDir, this.sidecarName(mediaId)),
       "utf8",
-    ).catch(() => undefined);
+    ).catch(async () => {
+      // 兼容旧布局 <mediaId>.json（当时只有图片/音频，不会与内容冲突）。
+      return readFile(path.join(mediaDir, `${mediaId}.json`), "utf8")
+        .catch(() => undefined);
+    });
     if (metaRaw === undefined) return undefined;
 
     let parsed: unknown;
@@ -211,13 +316,15 @@ export class MediaStore {
     ).catch(() => undefined);
     if (buffer === undefined) return undefined;
 
-    // 二次魔数校验：边车元数据即使通过 schema，也可能被整体替换成与真实内容
+    // 二次内容校验：边车元数据即使通过 schema，也可能被整体替换成与真实内容
     // 不一致的 kind/mimeType/extension；内容不一致的一律视为不存在。
-    const detected = detectMedia(buffer);
+    // 用 meta.extension 作为扩展名提示，保证与保存时的分类规则一致。
+    const detected = detectAttachment(buffer, meta.extension);
     if (
       detected === undefined
       || detected.kind !== meta.kind
       || detected.extension !== meta.extension
+      || detected.mimeType !== meta.mimeType
     ) {
       return undefined;
     }
@@ -255,15 +362,18 @@ export class MediaStore {
     const prefix = `${mediaId}.`;
     const targets: string[] = [];
     for (const entry of entries) {
-      if (entry === `${mediaId}.json`) {
+      if (
+        entry === this.sidecarName(mediaId)
+        || entry === `${mediaId}.json`
+      ) {
         targets.push(entry);
         continue;
       }
-      // 只匹配「白名单 mediaId + 白名单扩展名」的文件，无法逃逸 media 目录。
+      // 只匹配「白名单 mediaId + 安全扩展名」的文件，无法逃逸 media 目录。
       const extension = entry.startsWith(prefix)
         ? entry.slice(prefix.length)
         : "";
-      if (EXTENSION_TO_TYPE[extension] !== undefined) {
+      if (SAFE_EXTENSION_PATTERN.test(extension)) {
         targets.push(entry);
       }
     }
@@ -309,7 +419,10 @@ export class MediaStore {
     await mkdir(mediaDir, { recursive: true });
     await Promise.all([
       writeFile(path.join(mediaDir, `${mediaId}.${meta.extension}`), buffer),
-      writeFile(path.join(mediaDir, `${mediaId}.json`), JSON.stringify(meta)),
+      writeFile(
+        path.join(mediaDir, this.sidecarName(mediaId)),
+        JSON.stringify(meta),
+      ),
     ]);
   }
 }
@@ -323,8 +436,15 @@ function isMissingError(error: unknown): boolean {
   );
 }
 
-/** 魔数识别受支持媒体；不信任扩展名或客户端声明的 MIME。 */
-function detectMedia(buffer: Buffer): DetectedMedia | undefined {
+/**
+ * 内容检测：魔数优先；其次合法 UTF-8 文本；其余一律二进制。
+ * extension 只作为文本/二进制的辅助提示（魔数格式的扩展名在 save() 单独校验）。
+ */
+function detectAttachment(
+  buffer: Buffer,
+  extension: string,
+): DetectedMedia | undefined {
+  if (buffer.length === 0) return undefined;
   if (
     buffer.length >= PNG_MAGIC.length
     && buffer.subarray(0, PNG_MAGIC.length).equals(PNG_MAGIC)
@@ -365,10 +485,41 @@ function detectMedia(buffer: Buffer): DetectedMedia | undefined {
   if (buffer.length >= 2 && buffer[0] === 0xff && (buffer[1]! & 0xe0) === 0xe0) {
     return { kind: "audio", mimeType: "audio/mpeg", extension: "mp3" };
   }
-  return undefined;
+  if (
+    buffer.length >= 5
+    && buffer.subarray(0, 5).toString("latin1") === "%PDF-"
+  ) {
+    return { kind: "document", mimeType: PDF_MIME, extension: "pdf" };
+  }
+  if (isDocxMagic(buffer)) {
+    return { kind: "document", mimeType: DOCX_MIME, extension: "docx" };
+  }
+  if (isValidUtf8(buffer) && (extension === "" || TEXT_EXTENSIONS.has(extension))) {
+    const safeExtension = TEXT_EXTENSIONS.has(extension) ? extension : "txt";
+    return {
+      kind: "text",
+      mimeType: TEXT_MIME_TYPES[safeExtension] ?? "text/plain",
+      extension: safeExtension,
+    };
+  }
+  return {
+    kind: "binary",
+    mimeType: BINARY_MIME,
+    extension: SAFE_EXTENSION_PATTERN.test(extension) ? extension : "bin",
+  };
 }
 
 function fileExtension(name: string): string {
   const dot = name.lastIndexOf(".");
   return dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
+}
+
+/** 严格 UTF-8 解码：任何非法字节序列都判定为非文本内容。 */
+function isValidUtf8(buffer: Buffer): boolean {
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    return true;
+  } catch {
+    return false;
+  }
 }
