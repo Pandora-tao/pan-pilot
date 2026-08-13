@@ -536,6 +536,11 @@ describe("POST /v1/chat", () => {
         tools: { status: "available" },
         search: { status: "available" },
         scheduledTasks: { status: "available" },
+        mcp: {
+          status: "available",
+          transports: ["stdio", "streamableHttp"],
+          tools: true,
+        },
         memory: { status: "reserved" },
         planning: { status: "reserved" },
       },

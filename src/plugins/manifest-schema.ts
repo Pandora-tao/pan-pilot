@@ -26,7 +26,7 @@ export const pluginManifestSchema = z.object({
   name: z.string().regex(
     PLUGIN_NAME_PATTERN,
     "插件名必须匹配 ^[a-z][a-z0-9_]*$",
-  ),
+  ).refine((name) => !name.startsWith("mcp__"), "mcp__ 前缀保留给 MCP 工具"),
   description: z.string().trim().min(1, "description 不能为空").max(2000),
   parameters: z.unknown().refine(
     isObjectSchema,

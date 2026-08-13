@@ -1,5 +1,6 @@
 import Fastify, { type FastifyBaseLogger } from "fastify";
 import multipart from "@fastify/multipart";
+import type { Transport } from "@modelcontextprotocol/client";
 import { timingSafeEqual } from "node:crypto";
 import { DocStore } from "./docs/doc-store.js";
 import {
@@ -23,6 +24,9 @@ import { registerHealthRoute } from "./routes/health-route.js";
 import { registerMediaRoute } from "./routes/media-route.js";
 import { registerModelsRoute } from "./routes/models-route.js";
 import { BingSearchClient } from "./search/bing-search.js";
+import { loadMcpConfig, type McpConfig } from "./mcp/mcp-config.js";
+import { McpManager } from "./mcp/mcp-manager.js";
+import { registerMcpRoutes } from "./mcp/mcp-routes.js";
 import { registerScheduledTaskRoutes } from "./scheduled-tasks/scheduled-task-routes.js";
 import { ScheduledTaskScheduler } from "./scheduled-tasks/scheduled-task-scheduler.js";
 import { ScheduledTaskStore } from "./scheduled-tasks/scheduled-task-store.js";
@@ -89,6 +93,16 @@ export interface BuildAppOptions {
   scheduledTaskNow?: () => Date;
   /** 普通聊天和后台任务共用的上下文预算；默认读取环境变量。 */
   contextOptions?: ContextManagerOptions;
+  /** MCP 配置文件路径；默认取 PAN_PILOT_MCP_CONFIG。 */
+  mcpConfigPath?: string;
+  /** 测试注入已解析配置，不能与 mcpConfigPath 同时提供。 */
+  mcpConfig?: McpConfig;
+  /** Streamable HTTP 测试 fetch 替身。 */
+  mcpFetchImpl?: typeof fetch;
+  /** 测试或嵌入调用方注入 MCP 配置环境变量视图。 */
+  mcpEnv?: Readonly<Record<string, string | undefined>>;
+  /** 测试注入 MCP 内存传输。 */
+  mcpTransportFactory?: (name: string, config: McpConfig["servers"][string]) => Transport;
 }
 
 /** 组装应用依赖并注册所有横切能力与路由，但不在这里监听端口。 */
@@ -137,6 +151,19 @@ export function buildApp(options: BuildAppOptions = {}) {
     createReadAttachmentTool(mediaStore),
   ];
   const toolRegistry = new ToolRegistry();
+  if (options.mcpConfig !== undefined && options.mcpConfigPath !== undefined) {
+    throw new Error("mcpConfig and mcpConfigPath cannot both be provided");
+  }
+  let mcpConfig: McpConfig;
+  let mcpConfigError: string | undefined;
+  try {
+    mcpConfig = options.mcpConfig
+      ?? loadMcpConfig(options.mcpConfigPath ?? process.env.PAN_PILOT_MCP_CONFIG);
+  } catch {
+    // MCP 是独立工具源：配置损坏只关闭 MCP，不阻止聊天、文件和本地插件启动。
+    mcpConfig = { version: 1, servers: {} };
+    mcpConfigError = "MCP 配置不可用";
+  }
   const pluginsDir = options.pluginsDir
     ?? process.env.PAN_PILOT_PLUGINS_DIR
     ?? "./plugins";
@@ -154,6 +181,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   const serviceRef: { current: PluginService | undefined } = {
     current: undefined,
   };
+  const mcpRef: { current: McpManager | undefined } = { current: undefined };
   // 内容内置工具 + 两个只读/建议管理工具构成完整 builtin 集合，
   // PluginManager（装载）与 PluginService（安装校验）
   // 使用完全一致的集合，避免 builtinNames/refs 在两个边界上漂移。
@@ -181,6 +209,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     ...(options.pluginFetchImpl === undefined
       ? {}
       : { fetchImpl: options.pluginFetchImpl }),
+    additionalTools: () => mcpRef.current?.listTools() ?? [],
   });
   const pluginService = new PluginService({
     manager: pluginManager,
@@ -190,6 +219,17 @@ export function buildApp(options: BuildAppOptions = {}) {
   });
   managerRef.current = pluginManager;
   serviceRef.current = pluginService;
+  const mcpManager = new McpManager({
+    config: mcpConfig,
+    registry: toolRegistry,
+    localTools: () => pluginManager.listTools(),
+    authConfigured: apiToken !== "",
+    ...(options.mcpEnv === undefined ? {} : { env: options.mcpEnv }),
+    ...(options.mcpFetchImpl === undefined ? {} : { fetchImpl: options.mcpFetchImpl }),
+    ...(options.mcpTransportFactory === undefined
+      ? {} : { transportFactory: options.mcpTransportFactory }),
+  });
+  mcpRef.current = mcpManager;
   const scheduledTaskStore = new ScheduledTaskStore(
     options.scheduledTasksDir
       ?? process.env.PAN_PILOT_SCHEDULED_TASKS_DIR
@@ -267,6 +307,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     mutationAuthConfigured: apiToken !== "",
   });
   registerScheduledTaskRoutes(app, scheduledTaskScheduler);
+  registerMcpRoutes(app, mcpManager, apiToken !== "", mcpConfigError);
   // multipart 的 request.file() 是插件作用域装饰器，文件路由必须在插件子作用域内注册。
   app.register(async (scopedApp) => {
     await scopedApp.register(multipart, {
@@ -277,10 +318,12 @@ export function buildApp(options: BuildAppOptions = {}) {
   });
 
   app.addHook("onReady", async () => {
+    await mcpManager.start();
     await scheduledTaskScheduler.start();
   });
   app.addHook("onClose", async () => {
     await scheduledTaskScheduler.stop();
+    await mcpManager.close();
   });
 
   return app;

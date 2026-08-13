@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "servers": {
+    "local_example": {
+      "transport": "stdio",
+      "command": "node",
+      "args": ["/absolute/path/to/mcp-server.js"],
+      "timeoutMs": 30000,
+      "enabled": false
+    },
+    "remote_example": {
+      "transport": "streamableHttp",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MCP_EXAMPLE_TOKEN}"
+      },
+      "timeoutMs": 30000,
+      "enabled": false
+    }
+  }
+}

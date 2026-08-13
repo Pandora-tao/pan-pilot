@@ -51,6 +51,11 @@ export const agentCapabilities = {
       pauseResume: true,
       safeCheckpointRecovery: true,
     },
+    mcp: {
+      status: "available",
+      transports: ["stdio", "streamableHttp"],
+      tools: true,
+    },
     memory: {
       status: "reserved",
     },

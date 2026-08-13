@@ -17,6 +17,8 @@ export interface PluginManagerOptions {
   /** 允许 ${env:NAME} 引用的环境变量名白名单（默认拒绝全部）。 */
   allowedEnvVars?: readonly string[];
   fetchImpl?: typeof fetch;
+  /** 由其他动态协议贡献的工具（例如 MCP）；每次重建时原子合并。 */
+  additionalTools?: () => readonly AnyAgentTool[];
 }
 
 export type PluginState = "loaded" | "error" | "disabled";
@@ -54,6 +56,7 @@ export class PluginManager {
   private readonly builtinNames: ReadonlySet<string>;
   private readonly registry: ToolRegistry;
   private readonly httpOptions: HttpExecutorRuntimeOptions;
+  private readonly additionalTools: () => readonly AnyAgentTool[];
 
   private entries: PluginEntry[] = [];
   private loadErrors: PluginLoadError[] = [];
@@ -61,6 +64,7 @@ export class PluginManager {
   constructor(options: PluginManagerOptions) {
     this.pluginsDir = options.pluginsDir;
     this.registry = options.registry;
+    this.additionalTools = options.additionalTools ?? (() => []);
     this.httpOptions = {
       ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
       ...(options.allowedHosts === undefined
@@ -116,6 +120,11 @@ export class PluginManager {
   /** 按名字查询当前状态（含错误目录），供安装与启停校验。 */
   getStatus(name: string): PluginStatus | undefined {
     return this.listStatuses().find((status) => status.name === name);
+  }
+
+  /** 当前已启用的本地插件工具，供其他动态工具源做组合注册。 */
+  listTools(): AnyAgentTool[] {
+    return this.entries.filter((entry) => entry.enabled).map((entry) => entry.tool);
   }
 
   /** 运行时启停：只改内存态并重建注册表；加载失败的插件不可启停。 */
@@ -185,9 +194,7 @@ export class PluginManager {
   }
 
   private rebuildRegistry(): void {
-    const tools = this.entries
-      .filter((entry) => entry.enabled)
-      .map((entry) => entry.tool);
+    const tools = [...this.listTools(), ...this.additionalTools()];
     this.registry.replaceAll(tools);
   }
 

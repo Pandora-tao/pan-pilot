@@ -186,6 +186,8 @@ HTTP 接口会剥离 `checkpoint` 与 `activity`，只返回安全摘要。
 - `PAN_PILOT_MEDIA_DIR`：受控媒体存储目录，默认 `./media`。
 - `PAN_PILOT_SCHEDULED_TASKS_DIR`：定时任务与运行历史目录，默认
   `./scheduled-tasks`；生产应配置为 release 外持久目录。
+- `PAN_PILOT_MCP_CONFIG`：可选 MCP Client 配置文件路径；未配置时不连接任何
+  MCP Server。示例见 `mcp.example.json`。
 - `PAN_PILOT_API_TOKEN` 同时是插件变更接口的开关：未配置时安装、重载、
   启用和禁用一律返回 503（fail-closed）。
 - `PAN_PILOT_LOG_CHAT_CONTENT`：聊天内容日志开关，默认关闭。
@@ -209,6 +211,50 @@ HTTP 接口会剥离 `checkpoint` 与 `activity`，只返回安全摘要。
   `doubao-seed-2-0-lite-260428`，账号必须先在方舟控制台开通该模型。
 - `SEARCH_BASE_URL`：搜索端点覆盖，默认 Bing 网页搜索（无需 Key）。
 - `MIMO_API_KEY`、`JAVA_SERVICE_URL`：预留，当前代码未使用。
+
+## MCP 工具协议
+
+PanPilot 可以作为 MCP Client 连接外部 MCP Server，并把对方的 `tools/list`
+结果加入现有 `ChatAgent` 工具循环。使用官方 TypeScript SDK，支持 stdio 和
+Streamable HTTP；不自动回退到旧 SSE 传输。
+
+在 `PAN_PILOT_MCP_CONFIG` 指向的 JSON 文件中声明连接：
+
+```json
+{
+  "version": 1,
+  "servers": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "node",
+      "args": ["/opt/mcp/filesystem-server.js"],
+      "timeoutMs": 30000
+    },
+    "business": {
+      "transport": "streamableHttp",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MCP_BUSINESS_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+- Server 名只允许小写字母、数字和下划线；远端工具公开为
+  `mcp__<server>__<tool>`，不会覆盖本地插件或其他 MCP Server。
+- Streamable HTTP 必须使用 HTTPS，只有 localhost、127.0.0.1、`::1` 允许
+  HTTP。凭据通过 `${env:NAME}` 在启动时注入，状态接口不会回传 URL、命令、
+  请求头或环境变量。
+- stdio 进程只继承 SDK 的安全默认环境变量；配置 `env` 时会与安全默认值合并，
+  不会继承完整 `process.env`。
+- `GET /v1/mcp/servers` 返回脱敏连接状态与公开工具名。单个 Server 连接或工具
+  清单失败会隔离为 `error`，其他聊天、插件和 MCP Server 继续工作。
+- MCP 连接与状态接口要求配置 `PAN_PILOT_API_TOKEN`；未配置时不会连接任何
+  外部 Server，防止匿名聊天间接调用远端副作用工具。
+- MCP 工具参数仍经过 JSON Schema 校验；调用支持 `AbortSignal` 取消，默认
+  30 秒超时，单个 Server 最多公开 100 个工具，单次结果最大 1MB。Agent
+  不能自行新增或修改 MCP 连接。
 
 ## 聊天内容日志
 
