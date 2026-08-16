@@ -36,7 +36,6 @@ src/model/       模型适配端口与实现
 src/tools/       工具定义、白名单注册、校验与执行（含 list_plugins/suggest_plugin）
 src/plugins/     插件框架：manifest 校验、加载器、http 执行器、生命周期管理、
                  用户安装建议与直接管理（plugin-service / plugin-routes）
-src/docs/        docx 存储（DocStore）与读写/编辑引擎（word-editor）
 src/search/      搜索提供端口（SearchClient）与 Bing 实现
 ```
 
@@ -49,14 +48,11 @@ src/search/      搜索提供端口（SearchClient）与 Bing 实现
 - `/health` — 探活，不鉴权、不调模型
 - `/v1/capabilities` — 能力发现
 - `/v1/chat` — 聊天接口
-- `/v1/files` — multipart 上传 .docx；`GET /v1/files/:fileId` 下载（含修改版）
+- `/v1/media` — 受控附件上传、下载与删除；Office 文档也只使用 mediaId
 
-Word 文档工具（`create_word_document` / `read_word_document` /
-`edit_word_document`）通过白名单注册表接入 Agent 循环：上传原件不可变，
-创建/编辑结果另存新文件并返回 `downloadUrl`；工具结果只含摘要
-（fileId/下载地址/每条编辑的 applied 状态），正文不进 HTTP。
-创建走 `docx` 包生成完整样式包（A4/页边距/styles.xml），支持标题、段落、
-项目符号和表格；编辑引擎仍只重写 `word/document.xml`，两种产物结构兼容。
+Word/PDF/PPTX 工具位于独立 `pan-pilot-office-mcp` 项目，通过 MCP stdio
+接入；公开工具名带 `mcp__office__` 前缀，输入输出统一使用 `/v1/media` 的
+`mediaId`。PanPilot 主进程不解析 Office 文档，也不安装 `docx`/`unpdf`。
 `web_search` 工具走 `SearchClient` 端口（默认 Bing 网页搜索，无 Key；
 `SEARCH_BASE_URL` 可覆盖），结果标题/链接/摘要回填模型。
 
@@ -70,6 +66,7 @@ Word 文档工具（`create_word_document` / `read_word_document` /
 - **请求校验用 zod `.strict()`**：拒绝未声明字段，避免拼写错误被静默忽略后仍然调用付费模型
 - **TS 严格配置**：`verbatimModuleSyntax` 要求类型导入必须写 `import type`；NodeNext ESM 要求相对导入带 `.js` 后缀；`noUncheckedIndexedAccess` 要求处理索引可能 undefined；`exactOptionalPropertyTypes` 禁止把 `undefined` 显式赋给可选属性
 - **注释与用户可见文案用中文**（项目约定），代码标识符用英文
+- **思考过程始终显示为中文**：AI 助手在分析、推理与决策时的思考过程，一律使用中文表达
 - 聊天内容日志（`PAN_PILOT_LOG_CHAT_CONTENT=true`）会记录隐私数据，默认关闭；不要将含对话内容的日志提交进 Git
 
 ## 测试
@@ -87,7 +84,7 @@ const response = await app.inject({ method: "POST", url: "/v1/chat", payload: { 
 
 ## 环境变量
 
-`DEEPSEEK_API_KEY` 必填（缺失时 `DeepSeekClient` 构造函数直接抛错）。`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`（默认 `deepseek-v4-flash`）、`DEEPSEEK_RESOLVED_ADDRESS`（只覆盖 DeepSeek 主机的 DNS 解析结果，URL 域名保留以维持 Host/TLS SNI/证书校验）、`PAN_PILOT_API_TOKEN`（/v1 路由 Bearer 鉴权，用 `timingSafeEqual` 常时比较）、`PAN_PILOT_DOCS_DIR`（docx 存储目录，默认 `./docs`）、`SEARCH_BASE_URL`（搜索端点，默认 Bing）、`HOST`/`PORT`。完整清单见 `.env.example`；不要提交 `.env`。
+`DEEPSEEK_API_KEY` 必填（缺失时 `DeepSeekClient` 构造函数直接抛错）。`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`（默认 `deepseek-v4-flash`）、`DEEPSEEK_RESOLVED_ADDRESS`（只覆盖 DeepSeek 主机的 DNS 解析结果，URL 域名保留以维持 Host/TLS SNI/证书校验）、`PAN_PILOT_API_TOKEN`（/v1 路由 Bearer 鉴权，用 `timingSafeEqual` 常时比较）、`PAN_PILOT_MEDIA_DIR`（受控附件目录）、`PAN_PILOT_MCP_CONFIG`（MCP Server 配置）、`SEARCH_BASE_URL`（搜索端点，默认 Bing）、`HOST`/`PORT`。完整清单见 `.env.example`；不要提交 `.env`。
 插件相关：`PAN_PILOT_PLUGINS_DIR`（插件目录）、`PAN_PILOT_PLUGIN_ALLOWED_HOSTS`（http 插件 host 白名单，默认拒绝）、`PAN_PILOT_PLUGIN_ALLOWED_ENV_VARS`（${env:NAME} 引用白名单，默认拒绝）。
 
 ## 构建与部署

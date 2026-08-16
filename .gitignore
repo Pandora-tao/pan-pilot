@@ -4,6 +4,7 @@ dist/
 .env
 .env.*
 !.env.example
+/mcp.local.json
 coverage/
 .playwright-cli/
 *.log
@@ -12,5 +13,15 @@ coverage/
 docs/
 # 运行时媒体存储目录（PAN_PILOT_MEDIA_DIR 默认值），不提交生成文件
 media/
+# Runtime single-file code artifacts (PAN_PILOT_ARTIFACTS_DIR default).
+/artifacts/
 # Runtime scheduled-task state (PAN_PILOT_SCHEDULED_TASKS_DIR default).
 /scheduled-tasks/
+/sessions/
+# 运行时导出下载目录（/v1/artifacts 等附件下载），不提交
+/download/
+# 本地生成的 Office 示例文档，不提交
+/*.docx
+/*.pptx
+# 本地一次性脚本（generate-resume.ts 依赖的 docx 包已移除，无法运行）
+/scripts/

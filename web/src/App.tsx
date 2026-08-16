@@ -11,11 +11,13 @@ import { TasksView } from "./features/tasks/TasksView";
 import { chooseModelId } from "./model-selection";
 import type {
   CapabilitiesResponse,
+  ChatSessionMessage,
   ConsoleSettings,
   MediaAsset,
   ModelsResponse,
   PluginStatus,
   PluginSuggestion,
+  SessionSummary,
   ViewName,
 } from "./types";
 
@@ -43,6 +45,10 @@ export function App() {
   const [plugins, setPlugins] = useState<PluginStatus[]>([]);
   const [pluginSuggestions, setPluginSuggestions] = useState<PluginSuggestion[]>([]);
   const [taskCount, setTaskCount] = useState(0);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [sessionKey, setSessionKey] = useState(0);
+  const [sessionMessages, setSessionMessages] = useState<ChatSessionMessage[]>([]);
   const [media, setMedia] = useState<MediaAsset[]>([]);
   const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(new Set());
   const [chatDraft, setChatDraft] = useState("");
@@ -131,6 +137,14 @@ export function App() {
     }
   }, [client, toast]);
 
+  const refreshSessions = useCallback(async () => {
+    try {
+      setSessions(await client.sessions());
+    } catch (error) {
+      toast("会话列表获取失败：" + errorMessage(error));
+    }
+  }, [client, toast]);
+
   const checkHealth = useCallback(async () => {
     try {
       const result = await client.health();
@@ -159,9 +173,17 @@ export function App() {
     void refreshModels();
     void refreshPlugins();
     void refreshPluginSuggestions();
+    void refreshSessions();
     const timer = window.setInterval(() => void checkHealth(), 15_000);
     return () => window.clearInterval(timer);
-  }, [checkHealth, refreshCapabilities, refreshModels, refreshPluginSuggestions, refreshPlugins]);
+  }, [
+    checkHealth,
+    refreshCapabilities,
+    refreshModels,
+    refreshPluginSuggestions,
+    refreshPlugins,
+    refreshSessions,
+  ]);
 
   function toggleMedia(mediaId: string) {
     setSelectedMediaIds((current) => {
@@ -187,6 +209,54 @@ export function App() {
     }
   }
 
+  function newSession() {
+    setCurrentSessionId(null);
+    setSessionMessages([]);
+    setChatDraft("");
+    setSelectedMediaIds(new Set());
+    setSessionKey((current) => current + 1);
+  }
+
+  async function selectSession(sessionId: string) {
+    if (sessionId === currentSessionId) return;
+    try {
+      const { session } = await client.getSession(sessionId);
+      setCurrentSessionId(session.id);
+      setSessionMessages(session.messages);
+      setChatDraft("");
+      setSelectedMediaIds(new Set());
+      setSessionKey((current) => current + 1);
+    } catch (error) {
+      toast("会话读取失败：" + errorMessage(error));
+    }
+  }
+
+  async function deleteSession(sessionId: string) {
+    try {
+      await client.deleteSession(sessionId);
+      setSessions((current) => current.filter((item) => item.id !== sessionId));
+      if (sessionId === currentSessionId) newSession();
+      toast("会话已删除");
+    } catch (error) {
+      toast("会话删除失败：" + errorMessage(error));
+    }
+  }
+
+  async function saveSession(messages: ChatSessionMessage[]) {
+    try {
+      if (currentSessionId === null) {
+        const created = await client.createSession();
+        setCurrentSessionId(created.session.id);
+        await client.saveSession(created.session.id, { messages });
+      } else {
+        await client.saveSession(currentSessionId, { messages });
+      }
+      void refreshSessions();
+    } catch (error) {
+      toast("会话保存失败：" + errorMessage(error));
+    }
+  }
+
   const counts = {
     plugins: plugins.length,
     tasks: taskCount,
@@ -203,6 +273,11 @@ export function App() {
           health={health}
           baseUrl={settings.baseUrl}
           counts={counts}
+          sessions={sessions}
+          currentSessionId={currentSessionId}
+          onNewSession={newSession}
+          onSelectSession={selectSession}
+          onDeleteSession={deleteSession}
         />
         <main ref={workspaceRef} className={`workspace workspace-${activeView}`}>
           {activeView === "chat" && (
@@ -215,6 +290,10 @@ export function App() {
               selectedModelId={selectedModelId}
               onDraftChange={setChatDraft}
               onModelChange={setSelectedModelId}
+              sessionKey={sessionKey}
+              initialMessages={sessionMessages}
+              onSaveSession={saveSession}
+              onNewSession={newSession}
               onRequestMediaUpload={() => mediaInput.current?.click()}
               onToggleMedia={toggleMedia}
               onSent={() => setSelectedMediaIds(new Set())}

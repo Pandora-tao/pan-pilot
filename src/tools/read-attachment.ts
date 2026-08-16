@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { extractText } from "../docs/word-editor.js";
 import { MEDIA_ID_PATTERN, type MediaStore } from "../media/media-store.js";
 import type { AgentTool } from "./tool.js";
 
@@ -28,7 +27,7 @@ export interface ReadAttachmentOutput {
 /**
  * 读取已上传附件：
  * - text：UTF-8 解码并截断到 MAX_TEXT_CHARS；
- * - document：docx 提取正文 / pdf 提取文本（同样截断）；
+ * - document：拒绝解析并引导到隔离的 Office MCP；
  * - binary：只返回名称/大小/类型，不返回内容；
  * - image/audio：拒绝，指向对应的多模态分析工具。
  */
@@ -38,8 +37,8 @@ export function createReadAttachmentTool(
   return {
     name: "read_attachment",
     description:
-      "读取已上传附件的内容：文本文件直接读取，docx/pdf 提取正文；"
-      + "二进制文件只返回名称与大小，图片/音频请改用分析工具",
+      "读取已上传文本附件；二进制文件只返回名称与大小。"
+      + "Office 文档必须使用对应的 Office MCP 工具，图片/音频请改用分析工具",
     inputSchema: readAttachmentInputSchema,
     async execute(input, signal) {
       signal?.throwIfAborted();
@@ -55,6 +54,11 @@ export function createReadAttachmentTool(
       if (kind === "audio") {
         throw new Error("附件是音频，请使用 transcribe_audio 或 analyze_audio 工具分析");
       }
+      if (kind === "document") {
+        throw new Error(
+          `Office 文档 .${media.meta.extension} 不在主进程解析，请调用对应的 Office MCP 工具`,
+        );
+      }
       if (kind === "binary") {
         return {
           mediaId: input.mediaId,
@@ -68,11 +72,7 @@ export function createReadAttachmentTool(
         };
       }
 
-      const fullText = kind === "text"
-        ? media.buffer.toString("utf8")
-        : kind === "document" && media.meta.extension === "pdf"
-          ? await extractPdfText(media.buffer)
-          : (await extractText(media.buffer)).paragraphs.join("\n");
+      const fullText = media.buffer.toString("utf8");
       const truncated = fullText.length > MAX_TEXT_CHARS;
       return {
         mediaId: input.mediaId,
@@ -86,12 +86,4 @@ export function createReadAttachmentTool(
       };
     },
   };
-}
-
-/** 用 unpdf（pdfjs 封装）提取 PDF 全部页面的合并文本。 */
-async function extractPdfText(buffer: Buffer): Promise<string> {
-  // 懒加载：只有真正读取 PDF 时才引入 pdfjs，避免拖慢服务启动。
-  const { extractText } = await import("unpdf");
-  const { text } = await extractText(new Uint8Array(buffer), { mergePages: true });
-  return text;
 }

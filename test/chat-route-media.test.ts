@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import type { ModelClient } from "../src/model/model-client.js";
 import { mp3Bytes, pngBytes } from "./helpers/media-fixture.js";
-import { multipartBody } from "./helpers/docx-fixture.js";
+import { createDocxFixture, multipartBody } from "./helpers/docx-fixture.js";
+import { createPptxFixture } from "./helpers/pptx-fixture.js";
 
 const BOUNDARY = "----panpilot-chat-media-test";
 const AUTH = { authorization: "Bearer test-secret" };
@@ -114,14 +115,18 @@ describe("chat attachments", () => {
     expect(JSON.stringify(response.json())).not.toContain(mediaId);
   });
 
-  it("injects a mandatory read_attachment hint for a pdf attachment", async () => {
+  it.each([
+    ["report.pdf", () => Promise.resolve(Buffer.from("%PDF-1.4\n% minimal")), "mcp__office__read_pdf"],
+    ["report.docx", () => createDocxFixture(["正文"]), "mcp__office__read_word_document"],
+    ["report.pptx", () => createPptxFixture("正文"), "mcp__office__read_presentation"],
+  ])("injects the matching Office MCP hint for %s", async (name, fixture, toolName) => {
     const complete = vi.fn<ModelClient["complete"]>().mockResolvedValue({
       content: "我先读取文档",
       toolCalls: [],
       model: "test-model",
     });
     const app = buildWithFakeModel(complete);
-    const mediaId = await uploadMedia(app, Buffer.from("%PDF-1.4\n% minimal"), "report.pdf");
+    const mediaId = await uploadMedia(app, await fixture(), name);
 
     const response = await app.inject({
       method: "POST",
@@ -135,8 +140,10 @@ describe("chat attachments", () => {
 
     expect(response.statusCode).toBe(200);
     const hint = complete.mock.calls[0]![0].messages.at(-1)?.content ?? "";
-    expect(hint).toContain("read_attachment");
+    expect(hint).toContain(toolName);
     expect(hint).toContain(`mediaId: ${mediaId}`);
+    expect(hint).toContain("Office 插件未连接");
+    expect(hint).not.toContain("read_attachment");
   });
 
   it("injects a metadata-only hint for a binary attachment", async () => {

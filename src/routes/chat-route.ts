@@ -3,8 +3,14 @@ import type {
   FastifyReply,
   FastifyRequest,
 } from "fastify";
+import type { ServerResponse } from "node:http";
 import { z } from "zod";
-import { ChatAgent } from "../agent/chat-agent.js";
+import {
+  AgentTimeoutError,
+  ChatAgent,
+  findAgentTimeout,
+  isAbortError,
+} from "../agent/chat-agent.js";
 import {
   MEDIA_ID_PATTERN,
   type MediaStore,
@@ -24,7 +30,10 @@ const legacySystemMessage: ModelMessage = {
   role: "system",
   content:
     "你是 PanPilot，一个简洁、准确的 AI 助手。"
-    + "当工具返回下载地址时，把完整的 /v1/files/xxx 地址写在回复末尾。",
+    + "网页、小游戏和源码任务优先使用 create_code_artifact；只有用户明确要求"
+    + " Word 或 DOCX 时才使用 Word 工具。代码产物保存成功后只给出简短说明和"
+    + "下载地址，不要重复整份源码。小游戏先生成 8000 字符以内、核心可玩的紧凑"
+    + " MVP，不要为了附加功能输出半截源码。当工具返回下载地址时，把完整地址写在回复末尾。",
 };
 
 // strict() 会拒绝未声明字段，避免拼写错误被静默忽略后仍然调用付费模型。
@@ -55,6 +64,17 @@ const chatRequestSchema = z.object({
   { message: "messages 至少需要一条 user 消息", path: ["messages"] },
 );
 
+/** SSE 心跳间隔：路由独立发送，与 Agent 生成器无关。 */
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
+/** 自最后一次 Agent 事件起超过该时长未收到进展时发出 warning。 */
+export const DEFAULT_SLOW_WARNING_MS = 30_000;
+
+export interface ChatRouteTimeoutOptions {
+  modelTimeoutMs?: number;
+  toolTimeoutMs?: number;
+  timeoutMs?: number;
+}
+
 /**
  * HTTP 适配层：负责校验、协议兼容、状态码和日志，不包含模型厂商调用细节。
  */
@@ -66,6 +86,9 @@ export function registerChatRoute(
     logChatContent: boolean;
     mediaStore: MediaStore;
     contextOptions?: ContextManagerOptions;
+    timeouts?: ChatRouteTimeoutOptions;
+    heartbeatIntervalMs?: number;
+    slowWarningMs?: number;
   },
 ): void {
   app.post("/v1/chat", async (request, reply) => {
@@ -103,6 +126,7 @@ export function registerChatRoute(
     const modelId = selectedModel.descriptor.id;
     const chatAgent = new ChatAgent(selectedModel.client, toolRegistry, {
       ...(options.contextOptions === undefined ? {} : { context: options.contextOptions }),
+      ...(options.timeouts === undefined ? {} : options.timeouts),
     });
 
     // 在进入 Agent 层前，把两种 HTTP 请求格式统一成消息数组。
@@ -181,6 +205,17 @@ export function registerChatRoute(
     } catch (error) {
       request.log.error({ err: error }, "Chat request failed");
 
+      const timeout = findAgentTimeout(error);
+      if (timeout !== undefined) {
+        return reply.code(504).send(timeoutFailure(timeout));
+      }
+      if (isAbortError(error)) {
+        // 客户端已经取消；用非标 499（客户端关闭请求）与普通失败区分。
+        return reply.code(499).send({
+          error: "USER_ABORTED",
+          message: "请求已停止",
+        });
+      }
       // 对外隐藏 SDK、网络及密钥等内部错误细节，详细原因只进入服务端日志。
       return reply.code(502).send({
         error: "CHAT_FAILED",
@@ -202,7 +237,8 @@ interface AttachmentError {
  * mediaId，不携带媒体字节或 Base64，也不使用「需要时调用」的弱措辞：
  * - image → 必须先调用 analyze_image；
  * - audio → 按用户请求调用 transcribe_audio 或 analyze_audio；
- * - text/document → 必须先调用 read_attachment 读取内容；
+ * - text → 必须先调用 read_attachment 读取内容；
+ * - document → 必须调用对应的 Office MCP 工具；
  * - binary → 只能提及文件名/大小/类型，不得编造内容。
  */
 async function resolveAttachments(
@@ -265,11 +301,30 @@ function attachmentHint(
       + `（${media.meta.size} 字节，类型 ${media.meta.mimeType}）。`
       + "该附件无法读取内容，回答时只能提及文件名与大小，不得编造内容。";
   }
-  return `[附件] 用户上传了${kind === "text" ? "一个文本文件" : "一份文档"}`
-    + `「${media.meta.name}」（mediaId: ${mediaId}）。`
+  if (kind === "document") {
+    const tool = officeReaderTool(media.meta.extension);
+    return `[附件] 用户上传了一份 Office 文档「${media.meta.name}」`
+      + `（mediaId: ${mediaId}）。回答任何与该附件相关的问题之前，你必须先调用`
+      + ` ${tool}（mediaId: ${mediaId}）读取内容，再基于内容作答。`
+      + "如果该工具不在可用工具列表中，必须明确说明 Office 插件未连接，不得编造文档内容。";
+  }
+  return `[附件] 用户上传了一个文本文件「${media.meta.name}」（mediaId: ${mediaId}）。`
     + "回答任何与该附件相关的问题之前，你必须先调用"
     + ` read_attachment 工具（mediaId: ${mediaId}）读取该附件的内容，`
     + "再基于内容作答。";
+}
+
+function officeReaderTool(extension: string): string {
+  switch (extension) {
+    case "docx":
+      return "mcp__office__read_word_document";
+    case "pptx":
+      return "mcp__office__read_presentation";
+    case "pdf":
+      return "mcp__office__read_pdf";
+    default:
+      return "对应的 Office MCP 读取工具";
+  }
 }
 
 /**
@@ -282,7 +337,11 @@ async function streamChatReply(
   chatAgent: ChatAgent,
   modelId: string,
   messages: readonly ModelMessage[],
-  options: { logChatContent: boolean },
+  options: {
+    logChatContent: boolean;
+    heartbeatIntervalMs?: number;
+    slowWarningMs?: number;
+  },
   startedAt: number,
 ): Promise<void> {
   reply.hijack();
@@ -295,17 +354,57 @@ async function streamChatReply(
     connection: "keep-alive",
     "x-accel-buffering": "no",
   });
+  // SSE 建立后立即发送 accepted 状态并 flush，客户端无需等待模型即可看到进度。
+  raw.flushHeaders();
+  // 关闭 Nagle 算法，避免小体积 SSE 事件被 TCP 合并造成额外延迟。
+  raw.socket?.setNoDelay?.(true);
+  writeSseEvent(raw, { type: "status", stage: "accepted", elapsedMs: 0 });
   const abortSignal = clientAbortSignal(reply);
+  const heartbeatIntervalMs = options.heartbeatIntervalMs
+    ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+  const slowWarningMs = options.slowWarningMs ?? DEFAULT_SLOW_WARNING_MS;
+
+  // 路由侧独立心跳：Agent 生成器可能长时间不产出事件，心跳保活并驱动慢响应提示。
+  let lastActivityAt = Date.now();
+  let currentStage = "accepted";
+  let slowWarned = false;
+  const heartbeat = setInterval(() => {
+    const now = Date.now();
+    const elapsedMs = now - startedAt;
+    writeSseEvent(raw, {
+      type: "heartbeat",
+      elapsedMs,
+      stage: currentStage,
+    });
+    if (!slowWarned && now - lastActivityAt >= slowWarningMs) {
+      slowWarned = true;
+      writeSseEvent(raw, {
+        type: "warning",
+        code: "SLOW_RESPONSE",
+        message: "等待模型响应时间较长，请耐心等待",
+        elapsedMs,
+      });
+    }
+  }, heartbeatIntervalMs);
+  heartbeat.unref?.();
+  const stopHeartbeat = () => clearInterval(heartbeat);
+  raw.once("close", stopHeartbeat);
 
   try {
     for await (const event of chatAgent.chatStream(
       messages,
       abortSignal,
     )) {
+      lastActivityAt = Date.now();
+      if (event.type === "status") {
+        currentStage = event.stage;
+      } else if (event.type === "tool_start") {
+        currentStage = "tool";
+      }
       const responseEvent = event.type === "done"
         ? { ...event, result: { ...event.result, modelId } }
         : event;
-      raw.write(`data: ${JSON.stringify(responseEvent)}\n\n`);
+      writeSseEvent(raw, responseEvent);
       if (event.type === "done" && options.logChatContent) {
         request.log.info({
           event: "pan_pilot.chat.reply",
@@ -322,20 +421,54 @@ async function streamChatReply(
     }
     raw.end();
   } catch (error) {
-    if (abortSignal.aborted) {
-      // 客户端已断开，不再尝试发送错误事件。
-      raw.destroy();
-      return;
-    }
-    request.log.error({ err: error }, "Chat stream failed");
-    // 对外隐藏 SDK、网络及密钥等内部错误细节，详细原因只进入服务端日志。
-    raw.write(`data: ${JSON.stringify({
+    const failure = classifyStreamFailure(error, abortSignal);
+    request.log.error(
+      { err: error, errorCode: failure.error },
+      "Chat stream failed",
+    );
+    // 连接尚在时把分类后的失败事件发给客户端；用户中止通常连接已断开，写入会被忽略。
+    writeSseEvent(raw, {
       type: "error",
-      error: "CHAT_FAILED",
-      message: "Agent 调用失败",
-    })}\n\n`);
-    raw.end();
+      error: failure.error,
+      message: failure.message,
+      elapsedMs: Date.now() - startedAt,
+    });
+    if (!raw.destroyed && !raw.writableEnded) raw.end();
+  } finally {
+    stopHeartbeat();
   }
+}
+
+/** 对外只返回稳定错误码与用户可读消息，不暴露 SDK、网络或内部细节。 */
+function classifyStreamFailure(
+  error: unknown,
+  clientSignal: AbortSignal,
+): { error: string; message: string } {
+  const timeout = findAgentTimeout(error);
+  if (timeout !== undefined) return timeoutFailure(timeout);
+  if (clientSignal.aborted || isAbortError(error)) {
+    return { error: "USER_ABORTED", message: "请求已停止" };
+  }
+  return { error: "CHAT_FAILED", message: "Agent 调用失败" };
+}
+
+function timeoutFailure(
+  timeout: AgentTimeoutError,
+): { error: string; message: string } {
+  switch (timeout.kind) {
+    case "model":
+      return { error: "MODEL_TIMEOUT", message: "模型响应超时，已取消" };
+    case "tool":
+      return { error: "TOOL_TIMEOUT", message: "工具执行超时，已取消" };
+    case "request":
+      return { error: "REQUEST_TIMEOUT", message: "整体请求超时，已取消" };
+  }
+}
+
+/** 写入完整的一条 SSE 事件；连接销毁后静默跳过，避免 EPIPE 噪声。 */
+function writeSseEvent(raw: ServerResponse, event: unknown): void {
+  if (raw.destroyed || raw.writableEnded) return;
+  raw.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
 /**

@@ -12,6 +12,7 @@ import {
   webpBytes,
 } from "./helpers/media-fixture.js";
 import { createDocxFixture } from "./helpers/docx-fixture.js";
+import { createPptxFixture } from "./helpers/pptx-fixture.js";
 
 type SavedMedia = Awaited<ReturnType<MediaStore["save"]>>;
 
@@ -114,7 +115,7 @@ describe("MediaStore", () => {
     expect(media?.meta).toMatchObject({ kind: "binary" });
   });
 
-  it("accepts pdf and docx as document kind", async () => {
+  it("accepts pdf, docx and pptx as document kind", async () => {
     const pdf = await store.save(Buffer.from("%PDF-1.4\n% minimal"), "report.pdf");
     expect(pdf).toMatchObject({
       kind: "document",
@@ -134,6 +135,18 @@ describe("MediaStore", () => {
       extension: "docx",
     });
     await expect(store.read(docx.mediaId)).resolves.toBeDefined();
+
+    const pptx = await store.save(
+      await createPptxFixture("演示文稿"),
+      "slides.pptx",
+    );
+    expect(pptx).toMatchObject({
+      kind: "document",
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      extension: "pptx",
+    });
+    await expect(store.read(pptx.mediaId)).resolves.toBeDefined();
   });
 
   it("rejects a zip container that only pretends to be docx", async () => {
@@ -143,6 +156,13 @@ describe("MediaStore", () => {
       Buffer.from("not a docx package", "utf8"),
     ]);
     await expect(store.save(fake, "fake.docx"))
+      .rejects.toMatchObject({ code: "INVALID_MEDIA" });
+  });
+
+  it("rejects OOXML content with the wrong Office extension", async () => {
+    await expect(store.save(await createDocxFixture(["x"]), "wrong.pptx"))
+      .rejects.toMatchObject({ code: "INVALID_MEDIA" });
+    await expect(store.save(await createPptxFixture("x"), "wrong.docx"))
       .rejects.toMatchObject({ code: "INVALID_MEDIA" });
   });
 

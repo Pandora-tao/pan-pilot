@@ -28,6 +28,14 @@ describe("media routes", () => {
     await rm(mediaDir, { recursive: true, force: true });
   });
 
+  it("does not expose the removed legacy /v1/files routes", async () => {
+    const app = buildWithToken();
+    const get = await app.inject({ method: "GET", url: "/v1/files/legacy", headers: AUTH });
+    const post = await app.inject({ method: "POST", url: "/v1/files", headers: AUTH });
+    expect(get.statusCode).toBe(404);
+    expect(post.statusCode).toBe(404);
+  });
+
   it("uploads a PNG and downloads it back with derived metadata", async () => {
     const app = buildWithToken();
     const png = pngBytes();

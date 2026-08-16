@@ -1,0 +1,25 @@
+{
+  "apiVersion": "v1",
+  "name": "create_code_artifact",
+  "description": "把完整的单文件 HTML、CSS、JavaScript、TypeScript、JSON、Markdown 或纯文本源码保存为可下载代码产物；适合网页、小游戏和代码示例。工具不会执行或预览代码。content 必须是 8000 字符以内、无需外部资源即可工作的紧凑 MVP；若功能较多，优先保留核心可玩功能，不得输出半截源码。保存成功后只需向用户说明结果并给出 downloadUrl，不要重复整份源码。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100,
+        "pattern": "^[^\\\\/]+$"
+      },
+      "format": {
+        "type": "string",
+        "enum": ["html", "css", "javascript", "typescript", "json", "markdown", "text"]
+      },
+      "content": { "type": "string", "minLength": 1, "maxLength": 8000 }
+    },
+    "required": ["name", "format", "content"],
+    "additionalProperties": false
+  },
+  "executor": { "type": "builtin", "ref": "create_code_artifact" },
+  "enabled": true
+}

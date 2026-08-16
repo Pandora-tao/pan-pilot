@@ -2,7 +2,7 @@ import Fastify, { type FastifyBaseLogger } from "fastify";
 import multipart from "@fastify/multipart";
 import type { Transport } from "@modelcontextprotocol/client";
 import { timingSafeEqual } from "node:crypto";
-import { DocStore } from "./docs/doc-store.js";
+import { ArtifactStore } from "./artifacts/artifact-store.js";
 import {
   DEFAULT_MEDIA_MAX_BYTES,
   MediaStore,
@@ -10,16 +10,25 @@ import {
 import type { ModelClient } from "./model/model-client.js";
 import type { ContextManagerOptions } from "./agent/context-manager.js";
 import {
+  DEFAULT_MODEL_TIMEOUT_MS,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  DEFAULT_TOOL_TIMEOUT_MS,
+} from "./agent/chat-agent.js";
+import {
   ChatModelRegistry,
   createChatModelRegistry,
   createInjectedChatModelRegistry,
 } from "./model/model-registry.js";
 import type { MultimodalClient } from "./model/multimodal-client.js";
 import { VolcengineMultimodalClient } from "./model/volcengine-multimodal-client.js";
+import { registerArtifactRoute } from "./routes/artifact-route.js";
 import { registerCapabilitiesRoute } from "./routes/capabilities-route.js";
-import { registerChatRoute } from "./routes/chat-route.js";
+import {
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  DEFAULT_SLOW_WARNING_MS,
+  registerChatRoute,
+} from "./routes/chat-route.js";
 import { registerConsoleRoute } from "./routes/console-route.js";
-import { registerFilesRoute } from "./routes/files-route.js";
 import { registerHealthRoute } from "./routes/health-route.js";
 import { registerMediaRoute } from "./routes/media-route.js";
 import { registerModelsRoute } from "./routes/models-route.js";
@@ -30,19 +39,19 @@ import { registerMcpRoutes } from "./mcp/mcp-routes.js";
 import { registerScheduledTaskRoutes } from "./scheduled-tasks/scheduled-task-routes.js";
 import { ScheduledTaskScheduler } from "./scheduled-tasks/scheduled-task-scheduler.js";
 import { ScheduledTaskStore } from "./scheduled-tasks/scheduled-task-store.js";
+import { registerSessionRoute } from "./routes/session-route.js";
+import { SessionStore } from "./sessions/session-store.js";
 import { PluginManager } from "./plugins/plugin-manager.js";
 import { PluginService } from "./plugins/plugin-service.js";
 import { registerPluginRoutes } from "./plugins/plugin-routes.js";
 import { createAnalyzeAudioTool } from "./tools/analyze-audio.js";
 import { createAnalyzeImageTool } from "./tools/analyze-image.js";
 import { calculatorTool } from "./tools/calculator.js";
-import { createCreateWordDocumentTool } from "./tools/create-word-document.js";
+import { createCodeArtifactTool } from "./tools/create-code-artifact.js";
 import { dateCalculatorTool } from "./tools/date-calculator.js";
-import { createEditWordDocumentTool } from "./tools/edit-word-document.js";
 import { getCurrentTimeTool } from "./tools/get-current-time.js";
 import { createListPluginsTool } from "./tools/list-plugins.js";
 import type { MultimodalClientProvider } from "./tools/media-common.js";
-import { createReadWordDocumentTool } from "./tools/read-word-document.js";
 import { createReadAttachmentTool } from "./tools/read-attachment.js";
 import { createSuggestPluginTool } from "./tools/suggest-plugin.js";
 import { textStatsTool } from "./tools/text-stats.js";
@@ -79,6 +88,8 @@ export interface BuildAppOptions {
   pluginFetchImpl?: typeof fetch;
   /** 媒体存储目录，默认取 PAN_PILOT_MEDIA_DIR 或 ./media。 */
   mediaDir?: string;
+  /** 单文件代码产物目录，默认取 PAN_PILOT_ARTIFACTS_DIR 或 ./artifacts。 */
+  artifactsDir?: string;
   /** 媒体大小上限（字节），默认 10MB；供测试注入小上限。 */
   mediaMaxBytes?: number;
   /** 媒体存储实例；测试注入可控替身（如删除失败替身），默认新建。 */
@@ -87,12 +98,24 @@ export interface BuildAppOptions {
   multimodalClient?: MultimodalClient;
   /** 定时任务持久目录，默认取 PAN_PILOT_SCHEDULED_TASKS_DIR。 */
   scheduledTasksDir?: string;
+  /** 会话历史持久目录，默认取 PAN_PILOT_SESSIONS_DIR。 */
+  sessionsDir?: string;
   /** 定时任务执行上限，生产默认 10 分钟；测试可缩短。 */
   scheduledTaskRunTimeoutMs?: number;
   /** 测试注入可控时钟。 */
   scheduledTaskNow?: () => Date;
   /** 普通聊天和后台任务共用的上下文预算；默认读取环境变量。 */
   contextOptions?: ContextManagerOptions;
+  /** 等待一次模型响应的超时（毫秒）；默认读取 PAN_PILOT_MODEL_TIMEOUT_MS。 */
+  modelTimeoutMs?: number;
+  /** 单次工具执行的超时（毫秒）；默认读取 PAN_PILOT_TOOL_TIMEOUT_MS。 */
+  toolTimeoutMs?: number;
+  /** 单个聊天请求的总超时（毫秒）；默认读取 PAN_PILOT_CHAT_TIMEOUT_MS。 */
+  chatTimeoutMs?: number;
+  /** /v1/chat SSE 心跳间隔（毫秒）；默认读取 PAN_PILOT_HEARTBEAT_INTERVAL_MS。 */
+  heartbeatIntervalMs?: number;
+  /** SSE 无进展超过该时长后发送 warning（毫秒）；默认读取 PAN_PILOT_SLOW_WARNING_MS。 */
+  slowWarningMs?: number;
   /** MCP 配置文件路径；默认取 PAN_PILOT_MCP_CONFIG。 */
   mcpConfigPath?: string;
   /** 测试注入已解析配置，不能与 mcpConfigPath 同时提供。 */
@@ -121,7 +144,23 @@ export function buildApp(options: BuildAppOptions = {}) {
   const logChatContent = options.logChatContent
     ?? isEnabled(process.env.PAN_PILOT_LOG_CHAT_CONTENT);
   const contextOptions = options.contextOptions ?? contextOptionsFromEnv(process.env);
-  const docStore = new DocStore(process.env.PAN_PILOT_DOCS_DIR ?? "./docs");
+  const modelTimeoutMs = options.modelTimeoutMs
+    ?? positiveIntFromEnv(process.env, "PAN_PILOT_MODEL_TIMEOUT_MS", DEFAULT_MODEL_TIMEOUT_MS);
+  const toolTimeoutMs = options.toolTimeoutMs
+    ?? positiveIntFromEnv(process.env, "PAN_PILOT_TOOL_TIMEOUT_MS", DEFAULT_TOOL_TIMEOUT_MS);
+  const chatTimeoutMs = options.chatTimeoutMs
+    ?? positiveIntFromEnv(process.env, "PAN_PILOT_CHAT_TIMEOUT_MS", DEFAULT_REQUEST_TIMEOUT_MS);
+  const heartbeatIntervalMs = options.heartbeatIntervalMs
+    ?? positiveIntFromEnv(
+      process.env, "PAN_PILOT_HEARTBEAT_INTERVAL_MS", DEFAULT_HEARTBEAT_INTERVAL_MS,
+    );
+  const slowWarningMs = options.slowWarningMs
+    ?? positiveIntFromEnv(process.env, "PAN_PILOT_SLOW_WARNING_MS", DEFAULT_SLOW_WARNING_MS);
+  const artifactStore = new ArtifactStore(
+    options.artifactsDir
+      ?? process.env.PAN_PILOT_ARTIFACTS_DIR
+      ?? "./artifacts",
+  );
   const mediaMaxBytes = options.mediaMaxBytes ?? DEFAULT_MEDIA_MAX_BYTES;
   const mediaStore = options.mediaStore
     ?? new MediaStore(
@@ -141,9 +180,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     dateCalculatorTool,
     unitConverterTool,
     textStatsTool,
-    createCreateWordDocumentTool(docStore),
-    createReadWordDocumentTool(docStore),
-    createEditWordDocumentTool(docStore),
+    createCodeArtifactTool(artifactStore),
     createWebSearchTool(new BingSearchClient()),
     createAnalyzeImageTool(mediaStore, multimodalProvider),
     createAnalyzeAudioTool(mediaStore, multimodalProvider),
@@ -235,6 +272,11 @@ export function buildApp(options: BuildAppOptions = {}) {
       ?? process.env.PAN_PILOT_SCHEDULED_TASKS_DIR
       ?? "./scheduled-tasks",
   );
+  const sessionStore = new SessionStore(
+    options.sessionsDir
+      ?? process.env.PAN_PILOT_SESSIONS_DIR
+      ?? "./sessions",
+  );
   const scheduledTaskScheduler = new ScheduledTaskScheduler({
     store: scheduledTaskStore,
     modelRegistry,
@@ -268,6 +310,7 @@ export function buildApp(options: BuildAppOptions = {}) {
       reply.header("access-control-allow-origin", origin);
       reply.header("access-control-allow-methods", "GET,POST,PUT,DELETE,OPTIONS");
       reply.header("access-control-allow-headers", "authorization, content-type, accept");
+      reply.header("access-control-expose-headers", "content-disposition");
       reply.header("vary", "origin");
     }
     // 预检请求在鉴权钩子之前结束，浏览器只会在放行来源拿到 CORS 头。
@@ -301,19 +344,27 @@ export function buildApp(options: BuildAppOptions = {}) {
     logChatContent,
     mediaStore,
     contextOptions,
+    timeouts: {
+      modelTimeoutMs,
+      toolTimeoutMs,
+      timeoutMs: chatTimeoutMs,
+    },
+    heartbeatIntervalMs,
+    slowWarningMs,
   });
   registerPluginRoutes(app, pluginManager, pluginService, {
     // 未配置 API token 时，插件副作用接口 fail-closed。
     mutationAuthConfigured: apiToken !== "",
   });
+  registerArtifactRoute(app, artifactStore);
   registerScheduledTaskRoutes(app, scheduledTaskScheduler);
+  registerSessionRoute(app, sessionStore);
   registerMcpRoutes(app, mcpManager, apiToken !== "", mcpConfigError);
-  // multipart 的 request.file() 是插件作用域装饰器，文件路由必须在插件子作用域内注册。
+  // multipart 的 request.file() 是插件作用域装饰器，媒体路由必须在插件子作用域内注册。
   app.register(async (scopedApp) => {
     await scopedApp.register(multipart, {
       limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
     });
-    registerFilesRoute(scopedApp, docStore);
     registerMediaRoute(scopedApp, mediaStore, mediaMaxBytes);
   });
 
@@ -370,4 +421,18 @@ function optionalPositiveInt(
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 1) throw new Error(`${envName} 必须是正整数`);
   return { [key]: value };
+}
+
+function positiveIntFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+  name: string,
+  fallback: number,
+): number {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${name} 必须是正整数`);
+  }
+  return value;
 }

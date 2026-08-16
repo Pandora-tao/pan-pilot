@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import JSZip from "jszip";
 import { z } from "zod";
-import { assertDocxStructure, isDocxMagic } from "../docs/word-editor.js";
 
 /** 附件 ID 白名单：只允许 URL 安全字符，从根上挡住路径穿越。 */
 export const MEDIA_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
@@ -65,6 +65,7 @@ const EXTENSION_TO_TYPE: Record<string, string> = {
   wav: "wav",
   pdf: "pdf",
   docx: "docx",
+  pptx: "pptx",
 };
 
 /** 文本类扩展名白名单：内容必须同时是合法 UTF-8 才归为 text。 */
@@ -134,6 +135,7 @@ const SAFE_EXTENSION_PATTERN = /^[a-z0-9]{1,16}$/;
 
 const PDF_MIME = "application/pdf";
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 const BINARY_MIME = "application/octet-stream";
 
 const KNOWN_MIME_TYPES = new Set([
@@ -146,6 +148,7 @@ const KNOWN_MIME_TYPES = new Set([
   "text/plain",
   PDF_MIME,
   DOCX_MIME,
+  PPTX_MIME,
   BINARY_MIME,
   ...Object.values(TEXT_MIME_TYPES),
 ]);
@@ -196,7 +199,8 @@ const MP3_ID3_MAGIC = Buffer.from([0x49, 0x44, 0x33]);
  * 工具只能通过 mediaId 访问，绝不接受文件路径或远程 URL。
  *
  * 类型规则：
- * - image/audio/document（pdf/docx）：由魔数判定，扩展名必须与内容一致；
+ * - image/audio/document（pdf/docx/pptx）：由魔数与 OOXML 包结构判定，
+ *   扩展名必须与内容一致；
  * - text：内容为合法 UTF-8（扩展名为空或属于文本白名单）；
  * - 其余一律 binary（application/octet-stream），只提供元信息。
  *
@@ -253,12 +257,19 @@ export class MediaStore {
         + `（${detected.extension}）不一致或不受支持`,
       );
     }
-    // docx 魔数只证明是 zip 容器；结构必须包含必需的包条目。
+    // OOXML 魔数只证明是 zip 容器；结构必须包含对应格式的必需包条目。
     if (detected.kind === "document" && detected.extension === "docx") {
       try {
         await assertDocxStructure(buffer);
       } catch {
         throw new MediaStoreError("INVALID_MEDIA", "文件内容不是有效的 docx");
+      }
+    }
+    if (detected.kind === "document" && detected.extension === "pptx") {
+      try {
+        await assertPptxStructure(buffer);
+      } catch {
+        throw new MediaStoreError("INVALID_MEDIA", "文件内容不是有效的 pptx");
       }
     }
 
@@ -327,6 +338,20 @@ export class MediaStore {
       || detected.mimeType !== meta.mimeType
     ) {
       return undefined;
+    }
+    if (meta.kind === "document" && meta.extension === "docx") {
+      try {
+        await assertDocxStructure(buffer);
+      } catch {
+        return undefined;
+      }
+    }
+    if (meta.kind === "document" && meta.extension === "pptx") {
+      try {
+        await assertPptxStructure(buffer);
+      } catch {
+        return undefined;
+      }
     }
 
     return { mediaId, meta, buffer };
@@ -491,8 +516,10 @@ function detectAttachment(
   ) {
     return { kind: "document", mimeType: PDF_MIME, extension: "pdf" };
   }
-  if (isDocxMagic(buffer)) {
-    return { kind: "document", mimeType: DOCX_MIME, extension: "docx" };
+  if (isZipMagic(buffer)) {
+    return extension === "pptx"
+      ? { kind: "document", mimeType: PPTX_MIME, extension: "pptx" }
+      : { kind: "document", mimeType: DOCX_MIME, extension: "docx" };
   }
   if (isValidUtf8(buffer) && (extension === "" || TEXT_EXTENSIONS.has(extension))) {
     const safeExtension = TEXT_EXTENSIONS.has(extension) ? extension : "txt";
@@ -509,9 +536,42 @@ function detectAttachment(
   };
 }
 
+function isZipMagic(buffer: Buffer): boolean {
+  return buffer.length >= 4
+    && buffer[0] === 0x50
+    && buffer[1] === 0x4b
+    && (buffer[2] === 0x03 || buffer[2] === 0x05 || buffer[2] === 0x07)
+    && buffer[3] === 0x04;
+}
+
 function fileExtension(name: string): string {
   const dot = name.lastIndexOf(".");
   return dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
+}
+
+/** 校验 PowerPoint OOXML 包的核心结构，避免把任意 ZIP 当作 PPTX。 */
+async function assertPptxStructure(buffer: Buffer): Promise<void> {
+  const zip = await JSZip.loadAsync(buffer);
+  if (
+    !zip.file("[Content_Types].xml")
+    || !zip.file("ppt/presentation.xml")
+    || !Object.keys(zip.files).some((name) => /^ppt\/slides\/slide\d+\.xml$/u.test(name))
+  ) {
+    throw new Error("不是有效的 pptx：缺少必需的包条目");
+  }
+}
+
+/** 校验 Word OOXML 包的核心结构，上传层只负责格式真实性，不解析正文。 */
+async function assertDocxStructure(buffer: Buffer): Promise<void> {
+  const zip = await JSZip.loadAsync(buffer);
+  const contentTypes = zip.file("[Content_Types].xml");
+  if (
+    contentTypes === null
+    || !zip.file("word/document.xml")
+    || !(await contentTypes.async("string")).includes("wordprocessingml.document")
+  ) {
+    throw new Error("不是有效的 docx：缺少必需的包条目");
+  }
 }
 
 /** 严格 UTF-8 解码：任何非法字节序列都判定为非文本内容。 */

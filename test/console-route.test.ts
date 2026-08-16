@@ -76,6 +76,7 @@ describe("console page", () => {
     expect(preflight.statusCode).toBe(204);
     expect(preflight.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
     expect(preflight.headers["access-control-allow-headers"]).toContain("authorization");
+    expect(preflight.headers["access-control-expose-headers"]).toContain("content-disposition");
 
     // 任意网页来源不放行，浏览器拿不到 CORS 头。
     const evilSite = await app.inject({

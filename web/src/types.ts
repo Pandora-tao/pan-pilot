@@ -122,13 +122,6 @@ export interface ScheduledTasksResponse {
   tasks: ScheduledTask[];
 }
 
-export interface FileAsset {
-  fileId: string;
-  name: string;
-  size: number;
-  downloadUrl?: string;
-}
-
 export interface MediaAsset {
   mediaId: string;
   name: string;
@@ -137,11 +130,104 @@ export interface MediaAsset {
   mimeType: string;
 }
 
+export interface SessionAttachment {
+  mediaId: string;
+  name: string;
+  kind: MediaAsset["kind"];
+  size: number;
+  mimeType: string;
+}
+
+export interface ChatSessionMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+  attachments?: SessionAttachment[];
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: ChatSessionMessage[];
+}
+
+export interface SessionSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
 export interface ToolExecution {
   id?: string;
   name: string;
   status: "success" | "error";
+  durationMs?: number;
 }
+
+/** /v1/chat SSE 事件集合：控制台据此渲染处理过程反馈。 */
+export type ChatStreamStage = "accepted" | "model" | "tool" | string;
+
+export interface ChatStatusEvent {
+  type: "status";
+  stage: ChatStreamStage;
+  step?: number;
+  elapsedMs?: number;
+}
+
+export interface ChatToolStartEvent {
+  type: "tool_start";
+  id: string;
+  name: string;
+  step?: number;
+}
+
+export interface ChatToolExecutionEvent {
+  type: "tool_execution";
+  execution: ToolExecution;
+}
+
+export interface ChatContentEvent {
+  type: "content";
+  content: string;
+}
+
+export interface ChatHeartbeatEvent {
+  type: "heartbeat";
+  elapsedMs: number;
+  stage?: ChatStreamStage;
+}
+
+export interface ChatWarningEvent {
+  type: "warning";
+  code?: string;
+  message: string;
+  elapsedMs?: number;
+}
+
+export interface ChatDoneEvent {
+  type: "done";
+  result: ChatResult;
+}
+
+export interface ChatErrorEvent {
+  type: "error";
+  error: string;
+  message: string;
+  elapsedMs?: number;
+}
+
+export type ChatStreamEvent =
+  | ChatStatusEvent
+  | ChatToolStartEvent
+  | ChatToolExecutionEvent
+  | ChatContentEvent
+  | ChatHeartbeatEvent
+  | ChatWarningEvent
+  | ChatDoneEvent
+  | ChatErrorEvent;
 
 export interface ChatResult {
   content: string;

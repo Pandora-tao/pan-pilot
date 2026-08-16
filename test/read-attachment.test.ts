@@ -9,7 +9,7 @@ import { createDocxFixture } from "./helpers/docx-fixture.js";
 import { mp3Bytes, pngBytes } from "./helpers/media-fixture.js";
 
 /*
- * read_attachment 工具测试：text 解码与截断、docx/pdf 正文提取、
+ * read_attachment 工具测试：text 解码与截断、Office 文档隔离、
  * binary 只回元信息、image/audio 拒绝、非法 mediaId 拒绝。
  */
 describe("read_attachment tool", () => {
@@ -50,31 +50,14 @@ describe("read_attachment tool", () => {
     expect(result.truncated).toBe(true);
   });
 
-  it("extracts paragraphs from a docx attachment", async () => {
-    const { mediaId } = await store.save(
-      await createDocxFixture(["段落甲", "段落乙"]),
-      "doc.docx",
-    );
-    const result = await registry.execute("read_attachment", { mediaId }) as {
-      kind: string;
-      text: string;
-    };
-    expect(result.kind).toBe("document");
-    expect(result.text).toContain("段落甲");
-    expect(result.text).toContain("段落乙");
-  });
+  it("rejects DOCX and PDF parsing with Office MCP guidance", async () => {
+    const docx = await store.save(await createDocxFixture(["段落甲"]), "doc.docx");
+    const pdf = await store.save(createPdfFixture("Hello PDF World"), "report.pdf");
 
-  it("extracts text from a pdf attachment", async () => {
-    const { mediaId } = await store.save(
-      createPdfFixture("Hello PDF World"),
-      "report.pdf",
-    );
-    const result = await registry.execute("read_attachment", { mediaId }) as {
-      kind: string;
-      text: string;
-    };
-    expect(result.kind).toBe("document");
-    expect(result.text).toContain("Hello PDF World");
+    await expect(registry.execute("read_attachment", { mediaId: docx.mediaId }))
+      .rejects.toMatchObject({ code: "TOOL_EXECUTION_FAILED" });
+    await expect(registry.execute("read_attachment", { mediaId: pdf.mediaId }))
+      .rejects.toMatchObject({ code: "TOOL_EXECUTION_FAILED" });
   });
 
   it("returns metadata only for a binary attachment", async () => {

@@ -1,11 +1,13 @@
 import type {
   CapabilitiesResponse,
+  ChatSession,
   ChatMessage,
-  FileAsset,
+  ChatSessionMessage,
   MediaAsset,
   ModelsResponse,
   PluginStatus,
   PluginSuggestion,
+  SessionSummary,
   ScheduledTask,
   ScheduledTaskInput,
   ScheduledTaskRun,
@@ -129,6 +131,36 @@ export class ApiClient {
       });
   }
 
+  async sessions(): Promise<SessionSummary[]> {
+    const data = await this.json<{ sessions: SessionSummary[] }>("/v1/sessions");
+    return data.sessions ?? [];
+  }
+
+  createSession(): Promise<{ session: ChatSession }> {
+    return this.json("/v1/sessions", { method: "POST" });
+  }
+
+  getSession(id: string): Promise<{ session: ChatSession }> {
+    return this.json(`/v1/sessions/${encodeURIComponent(id)}`);
+  }
+
+  saveSession(
+    id: string,
+    input: { title?: string; messages: ChatSessionMessage[] },
+  ): Promise<{ session: ChatSession }> {
+    return this.json(
+      `/v1/sessions/${encodeURIComponent(id)}`,
+      jsonBody("PUT", input),
+    );
+  }
+
+  deleteSession(id: string): Promise<unknown> {
+    return this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .then(async (response) => {
+        if (!response.ok) throw new ApiError(await readError(response), response.status);
+      });
+  }
+
   setScheduledTaskEnabled(id: string, enabled: boolean): Promise<{ task: ScheduledTask }> {
     return this.json(
       `/v1/scheduled-tasks/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`,
@@ -162,12 +194,6 @@ export class ApiClient {
       `/v1/scheduled-task-runs/${encodeURIComponent(id)}/recovery`,
       jsonBody("POST", { action }),
     );
-  }
-
-  async uploadFile(file: File): Promise<FileAsset> {
-    const body = new FormData();
-    body.append("file", file);
-    return this.json("/v1/files", { method: "POST", body });
   }
 
   async uploadMedia(file: File): Promise<MediaAsset> {

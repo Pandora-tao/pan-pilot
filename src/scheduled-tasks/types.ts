@@ -100,6 +100,8 @@ export const scheduledTaskRunSchema = z.object({
     id: z.string(),
     name: z.string(),
     status: z.enum(["success", "error"]),
+    // 旧运行记录没有该字段，读取时保持兼容；新运行总是写入。
+    durationMs: z.number().int().nonnegative().optional(),
   }).strict()).optional(),
   context: z.object({
     compactions: z.number().int().nonnegative(),

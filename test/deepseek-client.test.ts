@@ -246,6 +246,7 @@ describe("DeepSeekClient streaming", () => {
     expect(events).toEqual([
       { type: "content", content: "你" },
       { type: "content", content: "好" },
+      { type: "activity" },
       {
         type: "completion",
         completion: {
@@ -323,6 +324,9 @@ describe("DeepSeekClient streaming", () => {
     }
 
     expect(events).toEqual([
+      { type: "activity" },
+      { type: "activity" },
+      { type: "activity" },
       {
         type: "completion",
         completion: {
@@ -398,6 +402,54 @@ describe("DeepSeekClient streaming", () => {
         // 空流不会有任何事件。
       }
     }).rejects.toThrow("Model returned neither content nor tool calls");
+  });
+
+  it("never forwards provider reasoning content to the client", async () => {
+    const createCompletion = vi.fn<CreateChatCompletion>().mockResolvedValue(
+      streamOf([
+        chunk({
+          choices: [{
+            // 部分厂商会把原始思维链放在 reasoning_content；协议只转发可见正文。
+            delta: {
+              content: "",
+              reasoning_content: "内部思维链：不应暴露给客户端",
+            } as ChatCompletionChunk["choices"][number]["delta"],
+            finish_reason: null,
+            index: 0,
+          }],
+        }),
+        chunk({
+          choices: [{
+            delta: { content: "可见回答" },
+            finish_reason: "stop",
+            index: 0,
+          }],
+        }),
+      ]),
+    );
+    const client = new DeepSeekClient({ createCompletion });
+
+    const events: unknown[] = [];
+    for await (const event of client.completeStream({
+      messages: [{ role: "user", content: "你好" }],
+      tools: [],
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: "activity" },
+      { type: "content", content: "可见回答" },
+      {
+        type: "completion",
+        completion: {
+          content: "可见回答",
+          toolCalls: [],
+          model: "response-model",
+        },
+      },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("思维链");
   });
 });
 

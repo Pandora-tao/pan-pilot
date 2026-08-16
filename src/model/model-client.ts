@@ -49,10 +49,12 @@ export interface ModelCompletion {
 /**
  * 模型流式输出事件：适配器负责把厂商增量归一化。
  *
+ * - activity：仅表示上游仍有分片到达，不携带推理、工具参数或其他内容；
  * - content：文本增量，Agent 可直接转发给客户端；
  * - completion：本轮完整结果，只在流结束时出现一次。
  */
 export type ModelStreamEvent =
+  | { type: "activity" }
   | { type: "content"; content: string }
   | { type: "completion"; completion: ModelCompletion };
 

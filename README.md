@@ -41,6 +41,8 @@ pnpm dev
 - `GET /v1/capabilities` — 能力发现，返回当前可用/预留的能力状态。
 - `GET /v1/models` — 返回脱敏的聊天模型目录、可用状态和默认模型 ID。
 - `POST /v1/chat` — 聊天接口，支持非流式与 SSE 流式两种响应。
+- `GET /v1/artifacts/:artifactId` — 下载 Agent 生成的受控单文件代码产物；
+  始终作为附件返回，不在服务端执行或内联预览。
 - `POST /v1/scheduled-task-runs/:id/pause` — 请求在当前模型/工具步骤完成后安全暂停；排队任务立即暂停。
 - `POST /v1/scheduled-task-runs/:id/resume` — 从最近一次持久化检查点恢复已暂停运行。
 - `POST /v1/scheduled-task-runs/:id/recovery` — 对异常中断在工具内部的运行明确选择 `retry` 或 `terminate`。
@@ -79,8 +81,8 @@ curl http://127.0.0.1:3000/health
 open http://127.0.0.1:3000/console
 ```
 
-控制台采用 React + TypeScript + Vite，包含对话、文件与媒体、插件、定时任务和能力
-五个工作区；支持按供应商切换聊天模型、SSE 流式停止、媒体附件、Word 文档，
+控制台采用 React + TypeScript + Vite，包含对话、媒体、插件、定时任务和能力
+五个工作区；支持按供应商切换聊天模型、SSE 流式停止、媒体附件、Office MCP 文档，
 以及由用户安装、启用和禁用插件。模型选择保存在同一份浏览器 localStorage 状态中。
 连接地址与 Bearer Token 保存在浏览器 localStorage；服务端未配置
 `PAN_PILOT_API_TOKEN` 时留空即可。源码位于 `web/src`，`pnpm build:web`
@@ -177,7 +179,8 @@ HTTP 接口会剥离 `checkpoint` 与 `activity`，只返回安全摘要。
   地址时，可只为 PanPilot 覆盖该主机的 DNS 结果；不修改全局 DNS，URL 中的
   域名保留以维持 Host/TLS SNI/证书校验。
 - `PAN_PILOT_API_TOKEN`：`/v1/*` 的 Bearer 鉴权令牌。
-- `PAN_PILOT_DOCS_DIR`：上传与修改版 docx 的存储目录，默认 `./docs`。
+- `PAN_PILOT_ARTIFACTS_DIR`：单文件代码产物目录，默认 `./artifacts`；
+  生产应配置为 release 外持久目录。
 - `PAN_PILOT_PLUGINS_DIR`：声明式插件目录，默认 `./plugins`。
 - `PAN_PILOT_PLUGIN_ALLOWED_HOSTS`：http 插件 host 白名单（逗号分隔）；
   默认拒绝：未配置时 http 插件在加载期与安装时都会被拒绝。
@@ -276,8 +279,8 @@ journalctl -u pan-pilot-test --since "30 minutes ago" -o cat \
 
 ## 安全工具层与声明式插件
 
-`src/tools/` 提供工具契约、白名单注册表，以及计算、日期、换算、文本、搜索、
-Word 文档和受控媒体工具：
+`src/tools/` 提供工具契约、白名单注册表，以及计算、日期、换算、文本、搜索和
+受控媒体工具；Office 文档工具由独立 MCP Server 提供：
 
 - `get_current_time`：读取指定 IANA 时区的当前时间，默认使用 UTC。
 - `calculator`：只执行参数受限的加、减、乘、除，不解析表达式或使用 `eval`。
@@ -341,28 +344,43 @@ curl -X POST -H "Authorization: Bearer $PAN_PILOT_API_TOKEN" \
   http://127.0.0.1:3000/v1/plugins/<name>/disable
 ```
 
-## 文档上传与编辑
+## Office 文档
 
-支持上传 `.docx`、让 Agent 读取并修改、再下载修改后的文件：
+Word、PDF 与 PowerPoint 的读取和生成由独立的 `pan-pilot-office-mcp` 进程提供，
+依赖与故障边界不进入 PanPilot 主进程：
 
-- `POST /v1/files`：multipart 上传（字段名 `file`，≤10MB），只接受 `.docx`，
-  校验 zip 结构与包内必需条目后落盘，返回 `fileId` 与 `downloadUrl`。
-- `GET /v1/files/:fileId`：下载文件，需要与 `/v1/chat` 相同的 Bearer 鉴权，
-  附件名为原文件名（中文名走 RFC 5987 `filename*`）。
-- 工具 `read_word_document`：按段落返回正文（上限 300 段 / 3 万字符），
-  供模型了解文档内容后再编辑。
-- 工具 `create_word_document`：根据标题和结构化内容（一级到三级标题、段落、
-  项目符号、表格）从零生成排版完整的 Word 文档——A4 页面与页边距、中文字体、
-  标题配色与行距段距（styles.xml），产物落盘并返回 `fileId` 与 `downloadUrl`。
-- 工具 `edit_word_document`：支持替换文本（`replace_text`）和在指定段落后
-  插入段落（`insert_paragraph`）；原件保持不变，修改结果另存为新文件，工具
-  结果只返回 `fileId`、`downloadUrl` 和每条编辑的 `applied` 状态，不返回正文。
-- 存储目录由 `PAN_PILOT_DOCS_DIR` 配置（默认 `./docs`）；文件 ID 使用白名单
-  字符集并二次校验解析路径，防止路径穿越。
+- 文档统一上传到 `POST /v1/media`，工具只接受受控 `mediaId`，输出也重新上传到
+  `/v1/media`；不接受任意路径或远程 URL。
+- Word 工具公开为 `mcp__office__read_word_document`、
+  `mcp__office__create_word_document`、`mcp__office__edit_word_document`。
+- PDF/PPTX 工具分别公开为 `mcp__office__read_pdf`、`create_pdf`、
+  `read_presentation`、`create_presentation`（均带 `mcp__office__` 前缀）。
+- 主项目的 `read_attachment` 只读取文本附件；Office 文档必须交给对应 MCP 工具。
+- 旧 `/v1/files` 与本地 Word builtin 已移除，历史 `docs` 目录不会被程序自动删除。
 
-当前编辑能力限制：替换文本要求目标串完整落在 Word 的单个文本节点内（Word
-可能把一段文字拆成多个节点，跨节点匹配会返回未应用原因），由模型根据
-`applied: false` 的结果调整匹配文本。
+Office MCP 仍需独立构建，并通过 `PAN_PILOT_MCP_CONFIG` 配置 stdio Server；当前
+修改配置或版本后需要重启 PanPilot。
+
+## 代码产物
+
+工具 `create_code_artifact` 用于保存网页、小游戏和代码示例，首版支持单文件
+HTML、CSS、JavaScript、TypeScript、JSON、Markdown 与纯文本：
+
+- 输入只包含不带路径的名称、固定格式枚举和 UTF-8 正文；底层存储上限为
+  200,000 字符 / 512KB，当前 Agent 工具进一步限制为 8,000 字符，确保网页或
+  小游戏以完整、紧凑的 MVP 落盘，而不是在厂商工具参数中途截断。不接受任意路径、
+  URL、二进制或 Base64。
+- 产物以版本化 JSON 原子写入 `PAN_PILOT_ARTIFACTS_DIR`，目录权限 `0700`、
+  文件权限 `0600`；读取时重新严格校验。
+- `GET /v1/artifacts/:artifactId` 使用格式对应的 MIME，但强制
+  `Content-Disposition: attachment`、`X-Content-Type-Options: nosniff` 和
+  `Content-Security-Policy: sandbox`，服务端不会运行或预览代码。
+- 工具结果只返回元数据与下载地址，不返回源码；最终回复默认只给简要说明和地址，
+  不重复整份代码。Word 工具仅用于用户明确要求的 Word/DOCX/报告，不用于源码。
+
+流式模型适配器会把推理块、工具参数块及 usage 块归一为不含任何内容的内部
+`activity` 事件，用于刷新模型空闲超时。该事件不会进入 HTTP/SSE，也不会暴露
+推理内容或工具参数；整体请求超时仍会终止无限活动的上游流。
 
 ## 媒体上传与理解
 
@@ -412,12 +430,11 @@ build；bundle 阶段导出「应用目录 + Linux Node 二进制」的自包含
 4. 工具参数校验、异常与循环终止测试。
 5. SSE 流式输出：`content` / `tool_execution` / `done` / `error` 事件，
    客户端断开自动取消。
-6. 文档上传与编辑：multipart 上传、docx 正文读取、文本替换与段落插入、
-   修改版下载（`files` 能力已 `available`）。
+6. Office 文档统一通过 `/v1/media` 上传，由独立 Office MCP 读取、创建和编辑。
 7. `web_search` 工具：Bing 无 Key 搜索，标题/链接/摘要回填模型
    （`search` 能力已 `available`）。
-8. `create_word_document` 工具：用 `docx` 包生成完整样式包（A4、styles.xml、
-   页边距），支持标题/段落/项目符号/表格，生成结果可直接被编辑工具继续修改。
+8. Word/PDF/PPTX 工具依赖隔离在 `pan-pilot-office-mcp`，主进程只保留受控
+   `mediaId` 存储和 MCP Client。
 9. 声明式插件框架：manifest 驱动白名单（builtin 引用 + http 执行器）、
    `GET /v1/plugins` 状态与原子重载、运行时启停、控制台插件面板。
 10. 用户管理插件：Agent 通过 `suggest_plugin` 生成待安装建议；用户在控制台

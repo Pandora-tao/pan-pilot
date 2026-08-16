@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { FastifyBaseLogger } from "fastify";
 import { buildApp } from "../src/app.js";
+import { MediaStore } from "../src/media/media-store.js";
+import type { MultimodalClient } from "../src/model/multimodal-client.js";
 import type { ModelClient } from "../src/model/model-client.js";
 import {
   ChatModelRegistry,
@@ -8,6 +13,7 @@ import {
   DEEPSEEK_OFFICIAL_V4_FLASH,
   VOLCENGINE_DEEPSEEK_V4_FLASH,
 } from "../src/model/model-registry.js";
+import { pngBytes } from "./helpers/media-fixture.js";
 
 /*
  * 这些测试通过 Fastify inject 在进程内走完整 HTTP 生命周期，
@@ -15,10 +21,12 @@ import {
  */
 describe("POST /v1/chat", () => {
   const apps: ReturnType<typeof buildApp>[] = [];
+  const tempDirs: string[] = [];
 
   afterEach(async () => {
     // 主动关闭每个 Fastify 实例，避免 hook、logger 或资源句柄泄漏到下一条用例。
     await Promise.all(apps.splice(0).map((app) => app.close()));
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
   it("returns the agent response", async () => {
@@ -51,7 +59,10 @@ describe("POST /v1/chat", () => {
           role: "system",
           content:
             "你是 PanPilot，一个简洁、准确的 AI 助手。"
-            + "当工具返回下载地址时，把完整的 /v1/files/xxx 地址写在回复末尾。",
+            + "网页、小游戏和源码任务优先使用 create_code_artifact；只有用户明确要求"
+            + " Word 或 DOCX 时才使用 Word 工具。代码产物保存成功后只给出简短说明和"
+            + "下载地址，不要重复整份源码。小游戏先生成 8000 字符以内、核心可玩的紧凑"
+            + " MVP，不要为了附加功能输出半截源码。当工具返回下载地址时，把完整地址写在回复末尾。",
         },
         {
           role: "user",
@@ -64,7 +75,9 @@ describe("POST /v1/chat", () => {
         expect.objectContaining({ name: "date_calculator" }),
         expect.objectContaining({ name: "unit_converter" }),
         expect.objectContaining({ name: "text_stats" }),
+        expect.objectContaining({ name: "create_code_artifact" }),
       ]),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -100,6 +113,7 @@ describe("POST /v1/chat", () => {
         expect.objectContaining({ name: "calculator" }),
         expect.objectContaining({ name: "get_current_time" }),
       ]),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -218,6 +232,7 @@ describe("POST /v1/chat", () => {
           id: "call_1",
           name: "calculator",
           status: "success",
+          durationMs: expect.any(Number),
         }],
       },
     });
@@ -279,6 +294,7 @@ describe("POST /v1/chat", () => {
           id: "call_1",
           name: "calculator",
           status: "error",
+          durationMs: expect.any(Number),
         }],
       },
     });
@@ -403,6 +419,8 @@ describe("POST /v1/chat", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("text/event-stream");
     expect(parseSse(response.body)).toEqual([
+      { type: "status", stage: "accepted", elapsedMs: 0 },
+      { type: "status", stage: "model", step: 1 },
       { type: "content", content: "你" },
       { type: "content", content: "好" },
       {
@@ -421,6 +439,7 @@ describe("POST /v1/chat", () => {
     expect(completeStream.mock.calls[0]![0].messages).toEqual([
       { role: "user", content: "你好" },
     ]);
+    expect(completeStream.mock.calls[0]![0].signal).toBeInstanceOf(AbortSignal);
   });
 
   it("streams only sanitized tool execution summaries", async () => {
@@ -463,10 +482,20 @@ describe("POST /v1/chat", () => {
 
     const events = parseSse(response.body) as Array<Record<string, unknown>>;
     expect(events).toEqual([
+      { type: "status", stage: "accepted", elapsedMs: 0 },
+      { type: "status", stage: "model", step: 1 },
+      { type: "status", stage: "tool", step: 1 },
+      { type: "tool_start", id: "call_1", name: "calculator", step: 1 },
       {
         type: "tool_execution",
-        execution: { id: "call_1", name: "calculator", status: "success" },
+        execution: {
+          id: "call_1",
+          name: "calculator",
+          status: "success",
+          durationMs: expect.any(Number),
+        },
       },
+      { type: "status", stage: "model", step: 2 },
       { type: "content", content: "结果是 3" },
       {
         type: "done",
@@ -476,6 +505,7 @@ describe("POST /v1/chat", () => {
             id: "call_1",
             name: "calculator",
             status: "success",
+            durationMs: expect.any(Number),
           }],
         }),
       },
@@ -501,7 +531,159 @@ describe("POST /v1/chat", () => {
 
     expect(response.statusCode).toBe(200);
     expect(parseSse(response.body)).toEqual([
-      { type: "error", error: "CHAT_FAILED", message: "Agent 调用失败" },
+      { type: "status", stage: "accepted", elapsedMs: 0 },
+      { type: "status", stage: "model", step: 1 },
+      {
+        type: "error",
+        error: "CHAT_FAILED",
+        message: "Agent 调用失败",
+        elapsedMs: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("reports a streaming model timeout as a distinct SSE error event", async () => {
+    const completeStream = vi.fn<ModelClient["completeStream"]>()
+      .mockImplementation(async function* () {
+        yield { type: "content", content: "开头" };
+        await new Promise(() => {});
+      });
+    const app = buildApp({
+      modelClient: fakeModelClient(vi.fn(), completeStream),
+      modelTimeoutMs: 30,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/chat",
+      payload: { message: "你好", stream: true },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(parseSse(response.body)).toEqual([
+      { type: "status", stage: "accepted", elapsedMs: 0 },
+      { type: "status", stage: "model", step: 1 },
+      { type: "content", content: "开头" },
+      {
+        type: "error",
+        error: "MODEL_TIMEOUT",
+        message: "模型响应超时，已取消",
+        elapsedMs: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("returns 504 with MODEL_TIMEOUT for a non-streaming model timeout", async () => {
+    const complete = vi.fn<ModelClient["complete"]>()
+      .mockImplementation(() => new Promise(() => {}));
+    const app = buildApp({
+      modelClient: fakeModelClient(complete),
+      modelTimeoutMs: 30,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/chat",
+      payload: { message: "你好" },
+    });
+
+    expect(response.statusCode).toBe(504);
+    expect(response.json()).toEqual({
+      error: "MODEL_TIMEOUT",
+      message: "模型响应超时，已取消",
+    });
+  });
+
+  it("reports a tool timeout even when the tool ignores its abort signal", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "panpilot-chat-route-"));
+    tempDirs.push(root);
+    const store = new MediaStore(root);
+    const { mediaId } = await store.save(pngBytes(), "a.png");
+    const analyze = vi.fn<MultimodalClient["analyze"]>()
+      .mockImplementation(() => new Promise(() => {}));
+    const completeStream = vi.fn<ModelClient["completeStream"]>()
+      .mockImplementation(async function* () {
+        yield {
+          type: "completion",
+          completion: {
+            content: "",
+            toolCalls: [{
+              id: "call_1",
+              name: "analyze_image",
+              arguments: { mediaId },
+            }],
+            model: "test-model",
+          },
+        };
+      });
+    const app = buildApp({
+      modelClient: fakeModelClient(vi.fn(), completeStream),
+      mediaStore: store,
+      multimodalClient: { analyze },
+      toolTimeoutMs: 30,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/chat",
+      payload: { message: "看看图", stream: true },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(parseSse(response.body)).toEqual([
+      { type: "status", stage: "accepted", elapsedMs: 0 },
+      { type: "status", stage: "model", step: 1 },
+      { type: "status", stage: "tool", step: 1 },
+      { type: "tool_start", id: "call_1", name: "analyze_image", step: 1 },
+      {
+        type: "error",
+        error: "TOOL_TIMEOUT",
+        message: "工具执行超时，已取消",
+        elapsedMs: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("reports an overall request timeout as REQUEST_TIMEOUT", async () => {
+    const completeStream = vi.fn<ModelClient["completeStream"]>()
+      .mockImplementation(async function* () {
+        yield { type: "content", content: "开头" };
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        yield {
+          type: "completion",
+          completion: {
+            content: "不会到达",
+            toolCalls: [],
+            model: "test-model",
+          },
+        };
+      });
+    const app = buildApp({
+      modelClient: fakeModelClient(vi.fn(), completeStream),
+      chatTimeoutMs: 30,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/chat",
+      payload: { message: "你好", stream: true },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(parseSse(response.body)).toEqual([
+      { type: "status", stage: "accepted", elapsedMs: 0 },
+      { type: "status", stage: "model", step: 1 },
+      { type: "content", content: "开头" },
+      {
+        type: "error",
+        error: "REQUEST_TIMEOUT",
+        message: "整体请求超时，已取消",
+        elapsedMs: expect.any(Number),
+      },
     ]);
   });
 

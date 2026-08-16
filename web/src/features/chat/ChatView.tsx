@@ -1,4 +1,5 @@
 import {
+  ChevronDown,
   Paperclip,
   Send,
   Square,
@@ -9,24 +10,33 @@ import { gsap } from "gsap";
 import {
   type KeyboardEvent,
   type ReactNode,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
-import { ApiClient, downloadBlob, readError } from "../../api";
+import {
+  ApiClient,
+  downloadBlob,
+  readError,
+} from "../../api";
 import { withMotion } from "../../animations";
+import { downloadFileName } from "../../download-name";
 import { modelDisplayLabel } from "../../model-selection";
 import type {
   ChatMessage,
   ChatResult,
+  ChatSessionMessage,
+  ChatStreamEvent,
   MediaAsset,
   ModelsResponse,
   ToolExecution,
 } from "../../types";
+import { SseEventParser } from "./sse-events";
 
 const SYSTEM_MESSAGE: ChatMessage = {
   role: "system",
-  content: "你是 PanPilot，一个简洁、准确的 AI 助手。你可以使用计算器、当前时间、读取、创建与编辑 Word 文档等工具；使用工具前先说明你的计划。当工具返回下载地址时，把完整的 /v1/files/xxx 地址写在回复末尾，方便用户直接下载。",
+  content: "你是 PanPilot，一个简洁、准确的 AI 助手。你可以使用计算器、当前时间、代码产物和已连接的 MCP 工具；使用工具前先说明计划。网页、小游戏和源码任务优先使用 create_code_artifact，只有用户明确要求 Word 或 DOCX 时才使用 Office MCP 的 Word 工具。代码产物保存成功后只给出简短说明和下载地址，不要重复整份源码。小游戏先生成 8000 字符以内、核心可玩的紧凑 MVP，不要为了附加功能输出半截源码。当工具返回下载地址时，把完整地址写在回复末尾，方便用户直接下载。",
 };
 
 interface UiMessage {
@@ -40,6 +50,26 @@ interface UiMessage {
   streaming?: boolean;
 }
 
+/** 处理过程面板中的单次工具执行状态。 */
+interface UiToolProgress {
+  id: string;
+  name: string;
+  status: "running" | "success" | "error";
+  durationMs?: number;
+}
+
+/** 当前（或最近一次）请求的处理过程反馈状态。 */
+interface UiProgress {
+  stage: "accepted" | "model" | "tool" | "done" | "stopped" | "failed";
+  step: number;
+  tools: UiToolProgress[];
+  startedAtMs: number;
+  finishedAtMs?: number;
+  expanded: boolean;
+  warning?: string;
+  error?: string;
+}
+
 interface ChatViewProps {
   client: ApiClient;
   mediaAssets: MediaAsset[];
@@ -47,8 +77,12 @@ interface ChatViewProps {
   draft: string;
   modelCatalog: ModelsResponse | null;
   selectedModelId: string;
+  sessionKey: number;
+  initialMessages: ChatSessionMessage[];
   onDraftChange: (value: string) => void;
   onModelChange: (modelId: string) => void;
+  onSaveSession: (messages: ChatSessionMessage[]) => void;
+  onNewSession: () => void;
   onRequestMediaUpload: () => void;
   onToggleMedia: (mediaId: string) => void;
   onSent: () => void;
@@ -62,8 +96,12 @@ export function ChatView({
   draft,
   modelCatalog,
   selectedModelId,
+  sessionKey,
+  initialMessages,
   onDraftChange,
   onModelChange,
+  onSaveSession,
+  onNewSession,
   onRequestMediaUpload,
   onToggleMedia,
   onSent,
@@ -73,14 +111,45 @@ export function ChatView({
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [stream, setStream] = useState(true);
   const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState<UiProgress | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const abortRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef<UiMessage[]>([]);
   const selected = mediaAssets.filter((item) => selectedMediaIds.has(item.mediaId));
 
-  function clearChat() {
-    if (running) return;
-    setConversation([SYSTEM_MESSAGE]);
-    setMessages([]);
+  // 进行中的请求每 250ms 刷新一次本地时钟，驱动处理过程面板的累计耗时。
+  const progressActive = progress !== null && progress.finishedAtMs === undefined;
+  useEffect(() => {
+    if (!progressActive) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [progressActive]);
+
+  /** 同步维护 state 与 ref，保证保存会话时能拿到最新消息数组。 */
+  function updateMessages(
+    updater: (current: UiMessage[]) => UiMessage[],
+  ) {
+    const next = updater(messagesRef.current);
+    messagesRef.current = next;
+    setMessages(next);
   }
+
+  // 会话切换/新建时：中止进行中的请求并加载目标会话消息。
+  useEffect(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    const restored = initialMessages
+      .filter((message) => message.role !== "system")
+      .map(toUiMessage);
+    messagesRef.current = restored;
+    setMessages(restored);
+    setConversation([
+      SYSTEM_MESSAGE,
+      ...restored.map(({ role, content }) => ({ role, content })),
+    ]);
+    setRunning(false);
+    setProgress(null);
+  }, [sessionKey]);
 
   async function sendMessage() {
     const text = draft.trim();
@@ -90,7 +159,7 @@ export function ChatView({
     const nextConversation = [...conversation, userMessage];
     const assistantId = crypto.randomUUID();
     setConversation(nextConversation);
-    setMessages((current) => [
+    updateMessages((current) => [
       ...current,
       {
         id: crypto.randomUUID(),
@@ -108,6 +177,13 @@ export function ChatView({
     ]);
     onDraftChange("");
     setRunning(true);
+    setProgress({
+      stage: "accepted",
+      step: 0,
+      tools: [],
+      startedAtMs: Date.now(),
+      expanded: true,
+    });
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -121,9 +197,24 @@ export function ChatView({
       );
       if (!response.ok) throw new Error(await readError(response));
       const result = stream
-        ? await consumeSse(response, assistantId, setMessages)
+        ? await consumeSse(response, (event) => handleStreamEvent(event, assistantId))
         : normalizeNonStreaming(await response.json());
+      if (!stream) {
+        setProgress((current) => current === null ? current : {
+          ...current,
+          stage: "done",
+          finishedAtMs: Date.now(),
+          expanded: false,
+          tools: (result.toolExecutions ?? []).map((tool) => ({
+            id: tool.id ?? tool.name,
+            name: tool.name,
+            status: tool.status,
+            durationMs: tool.durationMs,
+          })),
+        });
+      }
       finalizeAssistant(assistantId, result);
+      onSaveSession(toSessionMessages(messagesRef.current));
       setConversation((current) => [
         ...(result.contextMessages ?? current),
         { role: "assistant", content: result.content },
@@ -131,7 +222,16 @@ export function ChatView({
       onSent();
     } catch (error) {
       const stopped = error instanceof DOMException && error.name === "AbortError";
-      setMessages((current) => current.map((message) => (
+      setProgress((current) => current === null || current.finishedAtMs !== undefined
+        ? current
+        : {
+            ...current,
+            stage: stopped ? "stopped" : "failed",
+            finishedAtMs: Date.now(),
+            expanded: true,
+            ...(stopped ? {} : { error: errorMessage(error) }),
+          });
+      updateMessages((current) => current.map((message) => (
         message.id === assistantId
           ? {
               ...message,
@@ -149,8 +249,69 @@ export function ChatView({
     }
   }
 
+  /** 消费一条 SSE 事件：同步更新助手消息与处理过程面板。 */
+  function handleStreamEvent(event: ChatStreamEvent, assistantId: string) {
+    switch (event.type) {
+      case "content":
+        updateMessages((current) => current.map((message) => (
+          message.id === assistantId
+            ? { ...message, content: message.content + event.content }
+            : message
+        )));
+        break;
+      case "status":
+        setProgress((current) => current === null ? current : {
+          ...current,
+          stage: event.stage === "accepted" ? "accepted"
+            : event.stage === "model" ? "model"
+            : event.stage === "tool" ? "tool"
+            : current.stage,
+          step: event.step ?? current.step,
+        });
+        break;
+      case "tool_start":
+        setProgress((current) => upsertProgressTool(current, {
+          id: event.id,
+          name: event.name,
+          status: "running",
+        }, event.step));
+        break;
+      case "tool_execution":
+        updateMessages((current) => current.map((message) => (
+          message.id === assistantId
+            ? { ...message, tools: mergeTools(message.tools, event.execution) }
+            : message
+        )));
+        setProgress((current) => upsertProgressTool(current, {
+          id: event.execution.id ?? event.execution.name,
+          name: event.execution.name,
+          status: event.execution.status,
+          durationMs: event.execution.durationMs,
+        }));
+        break;
+      case "warning":
+        setProgress((current) => current === null ? current : {
+          ...current,
+          warning: event.message,
+        });
+        break;
+      case "done":
+        setProgress((current) => current === null ? current : {
+          ...current,
+          stage: "done",
+          finishedAtMs: Date.now(),
+          expanded: false,
+        });
+        break;
+      case "heartbeat":
+      case "error":
+        // 心跳仅用于保活；error 由 consumeSse 抛出后走统一失败路径。
+        break;
+    }
+  }
+
   function finalizeAssistant(id: string, result: ChatResult) {
-    setMessages((current) => current.map((message) => (
+    updateMessages((current) => current.map((message) => (
       message.id === id
         ? {
             ...message,
@@ -187,6 +348,18 @@ export function ChatView({
               />
             ))}
           </div>
+
+          {progress && (
+            <ProgressPanel
+              progress={progress}
+              nowMs={nowMs}
+              running={running}
+              onStop={() => abortRef.current?.abort()}
+              onToggle={() => setProgress((current) => current === null
+                ? current
+                : { ...current, expanded: !current.expanded })}
+            />
+          )}
 
           <div className="composer">
             <form
@@ -267,9 +440,9 @@ export function ChatView({
                     <button
                       className="composer-tool danger"
                       type="button"
-                      onClick={clearChat}
+                      onClick={onNewSession}
                       disabled={running}
-                      title="清空对话"
+                      title="清空对话并新建会话"
                     >
                       <Trash2 aria-hidden="true" size={14} />
                       清空
@@ -373,7 +546,88 @@ function MessageRow({
   );
 }
 
-const LINK_PATTERN = /(\/v1\/files\/[A-Za-z0-9-]+|https?:\/\/[^\s<>"')\]]+)/g;
+/** 可折叠的「处理过程」区域：进行中展示阶段/工具/耗时/慢响应提示与停止按钮，完成后折叠为耗时摘要。 */
+function ProgressPanel({
+  progress,
+  nowMs,
+  running,
+  onStop,
+  onToggle,
+}: {
+  progress: UiProgress;
+  nowMs: number;
+  running: boolean;
+  onStop: () => void;
+  onToggle: () => void;
+}) {
+  const elapsedMs = Math.max(
+    0,
+    (progress.finishedAtMs ?? nowMs) - progress.startedAtMs,
+  );
+  const failedCount = progress.tools.filter((tool) => tool.status === "error").length;
+  const summary = [
+    stageLabel(progress.stage),
+    `用时 ${formatDuration(elapsedMs)}`,
+    progress.tools.length > 0
+      ? `${progress.tools.length} 个工具调用${failedCount > 0 ? `（${failedCount} 失败）` : ""}`
+      : "",
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <div className={`progress-panel ${progress.stage}${progress.expanded ? " expanded" : ""}`}>
+      <div className="progress-summary-row">
+        <button
+          className="progress-toggle"
+          type="button"
+          aria-expanded={progress.expanded}
+          aria-label={progress.expanded ? "收起处理过程" : "展开处理过程"}
+          onClick={onToggle}
+        >
+          <ChevronDown aria-hidden="true" size={15} />
+        </button>
+        <span className="progress-summary">{summary}</span>
+        {running && (
+          <button className="composer-stop progress-stop" type="button" onClick={onStop}>
+            <Square aria-hidden="true" size={12} />
+            停止
+          </button>
+        )}
+      </div>
+      {progress.expanded && (
+        <div className="progress-details">
+          <div className="progress-stage-row">
+            <span className="progress-stage">{stageLabel(progress.stage)}</span>
+            {progress.step > 0 && <span className="progress-step">第 {progress.step} 轮</span>}
+            <span className="progress-elapsed">{formatDuration(elapsedMs)}</span>
+          </div>
+          {progress.warning && <div className="progress-warning">{progress.warning}</div>}
+          {progress.error && <div className="progress-error">{progress.error}</div>}
+          {progress.tools.length > 0 && (
+            <ul className="progress-tools">
+              {progress.tools.map((tool) => (
+                <li className={`progress-tool ${tool.status}`} key={tool.id}>
+                  <span className="progress-tool-name">{tool.name}</span>
+                  <span className="progress-tool-status">
+                    {tool.status === "running"
+                      ? "执行中…"
+                      : tool.status === "success"
+                      ? `成功 · ${formatDuration(tool.durationMs ?? 0)}`
+                      : "失败"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {progress.tools.length === 0 && !progress.warning && !progress.error && (
+            <div className="progress-hint">正在等待模型响应…</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const LINK_PATTERN = /(\/v1\/(?:media|artifacts)\/[A-Za-z0-9-]+|https?:\/\/[^\s<>"')\]]+)/g;
 
 function LinkedContent({
   text,
@@ -390,7 +644,7 @@ function LinkedContent({
     const raw = match[0];
     const index = match.index ?? 0;
     if (index > last) parts.push(text.slice(last, index));
-    if (raw.startsWith("/v1/files/")) {
+    if (raw.startsWith("/v1/media/") || raw.startsWith("/v1/artifacts/")) {
       parts.push(
         <button
           className="inline-link"
@@ -400,7 +654,10 @@ function LinkedContent({
             try {
               const response = await client.request(raw);
               if (!response.ok) throw new Error(await readError(response));
-              downloadBlob(await response.blob(), "download.docx");
+              const fallback = raw.startsWith("/v1/media/")
+                ? "office-document"
+                : "code-artifact.txt";
+              downloadBlob(await response.blob(), downloadFileName(response, fallback));
             } catch (error) {
               toast("下载失败：" + errorMessage(error));
             }
@@ -424,13 +681,12 @@ function LinkedContent({
 
 async function consumeSse(
   response: Response,
-  assistantId: string,
-  setMessages: React.Dispatch<React.SetStateAction<UiMessage[]>>,
+  onEvent: (event: ChatStreamEvent) => void,
 ): Promise<ChatResult> {
   if (!response.body) throw new Error("响应没有可读取的流");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
+  const parser = new SseEventParser<ChatStreamEvent>();
   let content = "";
   let doneResult: ChatResult | null = null;
   const tools: ToolExecution[] = [];
@@ -438,34 +694,17 @@ async function consumeSse(
   while (true) {
     const chunk = await reader.read();
     if (chunk.done) break;
-    buffer += decoder.decode(chunk.value, { stream: true });
-    let separator = buffer.indexOf("\n\n");
-    while (separator !== -1) {
-      const raw = buffer.slice(0, separator);
-      buffer = buffer.slice(separator + 2);
-      const line = raw.split("\n").find((entry) => entry.startsWith("data: "));
-      if (line) {
-        const event = JSON.parse(line.slice(6)) as {
-          type: string;
-          content?: string;
-          execution?: ToolExecution;
-          result?: ChatResult;
-          message?: string;
-        };
-        if (event.type === "content") {
-          content += event.content ?? "";
-        } else if (event.type === "tool_execution" && event.execution) {
-          tools.push(event.execution);
-        } else if (event.type === "done" && event.result) {
-          doneResult = event.result;
-        } else if (event.type === "error") {
-          throw new Error(event.message ?? "Agent 调用失败");
-        }
-        setMessages((current) => current.map((message) => (
-          message.id === assistantId ? { ...message, content, tools: [...tools] } : message
-        )));
+    for (const event of parser.push(decoder.decode(chunk.value, { stream: true }))) {
+      if (event.type === "content") {
+        content += event.content;
+      } else if (event.type === "tool_execution") {
+        tools.push(event.execution);
+      } else if (event.type === "done") {
+        doneResult = event.result;
+      } else if (event.type === "error") {
+        throw new Error(event.message || "Agent 调用失败");
       }
-      separator = buffer.indexOf("\n\n");
+      onEvent(event);
     }
   }
   if (!doneResult) throw new Error("流意外结束，没有收到完成事件");
@@ -474,6 +713,59 @@ async function consumeSse(
     content: doneResult.content || content,
     toolExecutions: doneResult.toolExecutions ?? tools,
   };
+}
+
+function upsertProgressTool(
+  progress: UiProgress | null,
+  tool: UiToolProgress,
+  step?: number,
+): UiProgress | null {
+  if (progress === null) return progress;
+  const exists = progress.tools.some((item) => item.id === tool.id);
+  return {
+    ...progress,
+    step: step ?? progress.step,
+    tools: exists
+      ? progress.tools.map((item) => item.id === tool.id ? { ...item, ...tool } : item)
+      : [...progress.tools, tool],
+  };
+}
+
+function mergeTools(current: ToolExecution[] | undefined, next: ToolExecution): ToolExecution[] {
+  const tools = [...(current ?? [])];
+  const index = tools.findIndex((item) => (item.id ?? item.name) === (next.id ?? next.name));
+  if (index === -1) {
+    tools.push(next);
+  } else {
+    tools[index] = next;
+  }
+  return tools;
+}
+
+function stageLabel(stage: UiProgress["stage"]): string {
+  switch (stage) {
+    case "accepted":
+      return "已受理请求";
+    case "model":
+      return "等待模型响应";
+    case "tool":
+      return "正在执行工具";
+    case "done":
+      return "处理完成";
+    case "stopped":
+      return "已停止";
+    case "failed":
+      return "处理失败";
+  }
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms} 毫秒`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return `${minutes} 分 ${rest} 秒`;
 }
 
 function normalizeNonStreaming(data: {
@@ -533,4 +825,43 @@ function kindLabel(kind: MediaAsset["kind"]): string {
     case "binary":
       return "文件";
   }
+}
+
+/** 把服务端会话消息还原为 UI 消息（system 已在上层过滤）。 */
+function toUiMessage(message: ChatSessionMessage): UiMessage {
+  return {
+    id: crypto.randomUUID(),
+    role: message.role === "assistant" ? "assistant" : "user",
+    content: message.content,
+    ...(message.attachments?.length
+      ? {
+          attachments: message.attachments.map((item) => ({
+            mediaId: item.mediaId,
+            name: item.name,
+            size: item.size,
+            kind: item.kind,
+            mimeType: item.mimeType,
+          })),
+        }
+      : {}),
+  };
+}
+
+/** 把 UI 消息转为可持久化的会话消息（含附件引用，不含执行细节）。 */
+function toSessionMessages(rows: UiMessage[]): ChatSessionMessage[] {
+  return rows.map((row) => ({
+    role: row.role,
+    content: row.content,
+    ...(row.attachments?.length
+      ? {
+          attachments: row.attachments.map((item) => ({
+            mediaId: item.mediaId,
+            name: item.name,
+            size: item.size,
+            kind: item.kind,
+            mimeType: item.mimeType,
+          })),
+        }
+      : {}),
+  }));
 }

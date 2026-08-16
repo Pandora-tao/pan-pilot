@@ -18,21 +18,23 @@ export const agentCapabilities = {
       // 工具白名单已接入 ChatAgent 循环，/v1/chat 会执行注册的工具。
       status: "available",
     },
-    files: {
-      // 支持上传 .docx、Agent 编辑后下载修改版文件。
+    artifacts: {
+      // Agent 可生成受控单文件代码产物；只允许鉴权下载，不在服务端执行或预览。
       status: "available",
+      formats: ["html", "css", "javascript", "typescript", "json", "markdown", "text"],
+      execution: false,
     },
     media: {
       // 图片已通过真实 Coding Plan 端点验收。音频代码路径已实现，但当前
       // 账号尚未开通标准方舟音频模型，不能将其声明为运行态可用。
-      // document/text 表示 read_attachment 可提取 docx/pdf 与文本正文。
+      // document 通过受控 mediaId 上传，由独立 Office MCP 读取和生成。
       status: "available",
       image: { status: "available" },
       audio: {
         status: "blocked",
         reason: "volcengine_audio_model_not_activated",
       },
-      document: { status: "available" },
+      document: { status: "available", processor: "office_mcp" },
       text: { status: "available" },
     },
     search: {
@@ -50,6 +52,11 @@ export const agentCapabilities = {
       persistence: true,
       pauseResume: true,
       safeCheckpointRecovery: true,
+    },
+    sessions: {
+      // 会话历史按会话文件持久化，支持新建、读取、保存与删除。
+      status: "available",
+      persistence: true,
     },
     mcp: {
       status: "available",

@@ -211,17 +211,22 @@ export class DeepSeekClient implements ModelClient {
     let model = "";
 
     for await (const chunk of stream) {
+      let emittedVisibleContent = false;
       model = chunk.model;
       if (chunk.usage?.total_tokens !== undefined) {
         totalTokens = chunk.usage.total_tokens;
       }
 
       const choice = chunk.choices[0];
-      if (!choice) continue;
+      if (!choice) {
+        yield { type: "activity" };
+        continue;
+      }
 
       const delta = choice.delta;
       if (delta?.content) {
         content += delta.content;
+        emittedVisibleContent = true;
         yield { type: "content", content: delta.content };
       }
 
@@ -238,6 +243,12 @@ export class DeepSeekClient implements ModelClient {
           current.arguments += toolCall.function.arguments;
         }
         toolCallDeltas.set(toolCall.index, current);
+      }
+
+      // 工具参数、推理内容、usage 及厂商保活块都属于真实上游活动。
+      // 只发无内容的内部事件，让 Agent 刷新空闲计时；绝不透传原始分片。
+      if (!emittedVisibleContent) {
+        yield { type: "activity" };
       }
     }
 

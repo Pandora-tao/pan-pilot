@@ -6,10 +6,10 @@ import type { CapabilitiesResponse, Capability } from "../../types";
 const descriptions: Record<string, string> = {
   chat: "对话与 SSE 流式输出",
   tools: "白名单工具循环",
-  files: "Word 文档上传、读取与编辑",
-  media: "图片与音频上传、多模态分析",
+  media: "图片、音频和 Office 文档上传；文档由 Office MCP 处理",
   search: "联网搜索",
   plugins: "用户管理的声明式插件",
+  sessions: "会话历史持久化、新建与删除",
   memory: "长期记忆",
   planning: "任务规划",
 };

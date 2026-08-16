@@ -53,6 +53,8 @@ export const agentRunCheckpointSchema = z.object({
     id: z.string(),
     name: z.string(),
     status: z.enum(["success", "error"]),
+    // 旧检查点没有该字段，读取时保持兼容；新检查点总是写入。
+    durationMs: z.number().int().nonnegative().optional(),
   }).strict()),
   context: z.object({
     compactions: z.number().int().nonnegative(),
@@ -171,7 +173,12 @@ export class ResumableChatAgent {
             model: state.model,
             ...(state.totalTokens === undefined ? {} : { totalTokens: state.totalTokens }),
             steps: state.steps,
-            toolExecutions: structuredClone(state.toolExecutions),
+            // 旧检查点可能没有 durationMs，读取时补 0 以匹配 AgentToolExecution 契约。
+            toolExecutions: structuredClone(state.toolExecutions)
+              .map((execution) => ({
+                ...execution,
+                durationMs: execution.durationMs ?? 0,
+              })),
             ...(state.context.compactions === 0 ? {} : { context: state.context }),
           },
         };
@@ -202,6 +209,7 @@ export class ResumableChatAgent {
 
     let status: AgentToolExecution["status"];
     let content: string;
+    const startedAt = Date.now();
     try {
       const result = await this.toolRegistry.execute(
         toolCall.name,
@@ -218,7 +226,12 @@ export class ResumableChatAgent {
       content = toolErrorMessage(error);
     }
 
-    state.toolExecutions.push({ id: toolCall.id, name: toolCall.name, status });
+    state.toolExecutions.push({
+      id: toolCall.id,
+      name: toolCall.name,
+      status,
+      durationMs: Date.now() - startedAt,
+    });
     state.history.push({
       role: "tool",
       toolCallId: toolCall.id,
