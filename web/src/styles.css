@@ -802,6 +802,29 @@ code {
   border-radius: 12px;
   font-size: 12px;
 }
+.auth-status {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  font-size: 12px;
+}
+.auth-status > span { color: var(--muted); }
+.auth-status > strong { margin-right: auto; }
+.auth-note, .auth-warning, .auth-error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.auth-note { color: var(--muted); background: var(--paper); }
+.auth-warning { color: #8a4b10; background: #fff3df; border: 1px solid #efd3a6; }
+.auth-error { color: var(--danger); background: var(--danger-soft); }
 .item-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .plugin-grid {
   display: grid;

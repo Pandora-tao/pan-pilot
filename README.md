@@ -56,9 +56,13 @@ pnpm dev
   错误，不泄露路径/内部细节，绝不谎报删除成功）。供调用方在会话删除/事务
   回滚时联动清理；当前没有定时对账/TTL 自动清理。
 
-配置了 `PAN_PILOT_API_TOKEN` 后，`/v1/*` 要求请求头
-`Authorization: Bearer <token>`（恒定时间比较）；未配置时 `/v1/*` 开放访问。
-`/health` 始终公开。
+配置了 `PAN_PILOT_API_TOKEN` 后，除密码登录外的 `/v1/*` 要求请求头
+`Authorization: Bearer <credential>`。Portal 后端等服务调用方继续使用原始 API
+token；网页控制台通过 `POST /v1/auth/login` 提交
+`PAN_PILOT_CONSOLE_PASSWORD`，换取默认有效期 30 天的 HMAC 签名通行证。
+原始 API token 不会下发到浏览器；密码修改后旧通行证自动失效。登录接口按客户端
+IP 在 10 分钟内最多接受 5 次错误尝试。未配置 API token 时 `/v1/*` 开放访问，
+未配置控制台密码时登录接口 fail-closed 返回 503；`/health` 始终公开。
 
 ### 出站代理（多模态调用）
 
@@ -84,8 +88,8 @@ open http://127.0.0.1:3000/console
 控制台采用 React + TypeScript + Vite，包含对话、媒体、插件、定时任务和能力
 五个工作区；支持按供应商切换聊天模型、SSE 流式停止、媒体附件、Office MCP 文档，
 以及由用户安装、启用和禁用插件。模型选择保存在同一份浏览器 localStorage 状态中。
-连接地址与 Bearer Token 保存在浏览器 localStorage；服务端未配置
-`PAN_PILOT_API_TOKEN` 时留空即可。源码位于 `web/src`，`pnpm build:web`
+连接地址与登录后签发的通行证保存在浏览器 localStorage；控制台不再要求用户接触
+原始 API token。源码位于 `web/src`，`pnpm build:web`
 生成 `web/dist`，由 Fastify 同源托管；开发时 `pnpm dev` 会同时启动后端和
 Vite 前端服务。
 
@@ -179,6 +183,8 @@ HTTP 接口会剥离 `checkpoint` 与 `activity`，只返回安全摘要。
   地址时，可只为 PanPilot 覆盖该主机的 DNS 结果；不修改全局 DNS，URL 中的
   域名保留以维持 Host/TLS SNI/证书校验。
 - `PAN_PILOT_API_TOKEN`：`/v1/*` 的 Bearer 鉴权令牌。
+- `PAN_PILOT_CONSOLE_PASSWORD`：控制台访问密码，只用于换取浏览器签名通行证；
+  真实值只放运行环境，不提交到仓库。
 - `PAN_PILOT_ARTIFACTS_DIR`：单文件代码产物目录，默认 `./artifacts`；
   生产应配置为 release 外持久目录。
 - `PAN_PILOT_PLUGINS_DIR`：声明式插件目录，默认 `./plugins`。

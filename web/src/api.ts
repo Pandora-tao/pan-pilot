@@ -27,6 +27,7 @@ export class ApiClient {
   constructor(
     private readonly baseUrl: string,
     private readonly token: string,
+    private readonly onUnauthorized?: () => void,
   ) {}
 
   async request(path: string, init: RequestInit = {}): Promise<Response> {
@@ -41,8 +42,16 @@ export class ApiClient {
 
   async json<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await this.request(path, init);
-    if (!response.ok) throw new ApiError(await readError(response), response.status);
+    if (!response.ok) {
+      const error = new ApiError(await readError(response), response.status);
+      if (response.status === 401) this.onUnauthorized?.();
+      throw error;
+    }
     return response.json() as Promise<T>;
+  }
+
+  login(password: string): Promise<{ passport: string; expiresAt: string }> {
+    return this.json("/v1/auth/login", jsonBody("POST", { password }));
   }
 
   health(): Promise<{ status: string }> {

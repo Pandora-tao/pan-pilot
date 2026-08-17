@@ -1,6 +1,6 @@
 import { gsap } from "gsap";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ApiClient } from "./api";
+import { ApiClient, ApiError } from "./api";
 import { withMotion } from "./animations";
 import { Modal } from "./components/Modal";
 import { Sidebar } from "./components/Sidebar";
@@ -53,13 +53,17 @@ export function App() {
   const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(new Set());
   const [chatDraft, setChatDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(!initial.token);
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState("");
   const [toastMessage, setToastMessage] = useState("");
   const [directUpload, setDirectUpload] = useState(false);
   const mediaInput = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
+  const requireLogin = useCallback(() => setLoginOpen(true), []);
   const client = useMemo(
-    () => new ApiClient(settings.baseUrl, settings.token),
-    [settings],
+    () => new ApiClient(settings.baseUrl, settings.token, requireLogin),
+    [requireLogin, settings],
   );
 
   useLayoutEffect(() => {
@@ -106,7 +110,7 @@ export function App() {
     try {
       setCapabilities(await client.capabilities());
     } catch (error) {
-      toast("能力状态获取失败：" + errorMessage(error));
+      if (!isUnauthorized(error)) toast("能力状态获取失败：" + errorMessage(error));
     }
   }, [client, toast]);
 
@@ -117,7 +121,7 @@ export function App() {
       setSelectedModelId((current) => chooseModelId(catalog, current));
     } catch (error) {
       setModelCatalog(null);
-      toast("模型目录获取失败：" + errorMessage(error));
+      if (!isUnauthorized(error)) toast("模型目录获取失败：" + errorMessage(error));
     }
   }, [client, toast]);
 
@@ -125,7 +129,7 @@ export function App() {
     try {
       setPlugins(await client.plugins());
     } catch (error) {
-      toast("插件状态获取失败：" + errorMessage(error));
+      if (!isUnauthorized(error)) toast("插件状态获取失败：" + errorMessage(error));
     }
   }, [client, toast]);
 
@@ -133,7 +137,7 @@ export function App() {
     try {
       setPluginSuggestions(await client.pluginSuggestions());
     } catch (error) {
-      toast("待安装插件获取失败：" + errorMessage(error));
+      if (!isUnauthorized(error)) toast("待安装插件获取失败：" + errorMessage(error));
     }
   }, [client, toast]);
 
@@ -141,7 +145,7 @@ export function App() {
     try {
       setSessions(await client.sessions());
     } catch (error) {
-      toast("会话列表获取失败：" + errorMessage(error));
+      if (!isUnauthorized(error)) toast("会话列表获取失败：" + errorMessage(error));
     }
   }, [client, toast]);
 
@@ -257,6 +261,22 @@ export function App() {
     }
   }
 
+  async function login(password: string) {
+    setLoginBusy(true);
+    setLoginError("");
+    try {
+      // 登录请求不携带旧通行证，避免把失效凭证与密码验证混在一起。
+      const result = await new ApiClient(settings.baseUrl, "").login(password);
+      setSettings((current) => ({ ...current, token: result.passport }));
+      setLoginOpen(false);
+      toast("验证通过，通行证已保存在浏览器");
+    } catch (error) {
+      setLoginError(errorMessage(error));
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
   const counts = {
     plugins: plugins.length,
     tasks: taskCount,
@@ -342,15 +362,38 @@ export function App() {
         settings={settings}
         onClose={() => setSettingsOpen(false)}
         onSave={(next) => {
-          setSettings(next);
+          const baseUrlChanged = next.baseUrl !== settings.baseUrl;
+          setSettings({ ...next, token: baseUrlChanged ? "" : settings.token });
           setSettingsOpen(false);
+          if (baseUrlChanged) setLoginOpen(true);
           toast("连接设置已保存");
         }}
         onClear={() => {
           setSettings({ baseUrl: DEFAULT_BASE_URL, token: "" });
           setSettingsOpen(false);
+          setLoginOpen(true);
           toast("本地设置已清除");
         }}
+        onLogin={() => {
+          setSettingsOpen(false);
+          setLoginError("");
+          setLoginOpen(true);
+        }}
+        onLogout={() => {
+          setSettings((current) => ({ ...current, token: "" }));
+          setSettingsOpen(false);
+          setLoginOpen(true);
+          toast("浏览器通行证已清除");
+        }}
+      />
+
+      <LoginModal
+        open={loginOpen}
+        baseUrl={settings.baseUrl}
+        busy={loginBusy}
+        error={loginError}
+        onClose={() => setLoginOpen(false)}
+        onLogin={(password) => void login(password)}
       />
 
       <div className={`toast ${toastMessage ? "show" : ""}`} role="status" aria-live="polite">
@@ -366,12 +409,16 @@ function SettingsModal({
   onClose,
   onSave,
   onClear,
+  onLogin,
+  onLogout,
 }: {
   open: boolean;
   settings: ConsoleSettings;
   onClose: () => void;
   onSave: (settings: ConsoleSettings) => void;
   onClear: () => void;
+  onLogin: () => void;
+  onLogout: () => void;
 }) {
   const [draft, setDraft] = useState(settings);
 
@@ -390,7 +437,7 @@ function SettingsModal({
             type="button"
             onClick={() => onSave({
               baseUrl: draft.baseUrl.trim().replace(/\/+$/, ""),
-              token: draft.token.trim(),
+              token: settings.token,
             })}
           >
             保存
@@ -408,16 +455,78 @@ function SettingsModal({
             placeholder="http://127.0.0.1:3000"
           />
         </label>
+        <div className="auth-status">
+          <span>登录状态</span>
+          <strong>{settings.token ? "浏览器已保存通行证" : "尚未验证"}</strong>
+          <button type="button" onClick={onLogin}>
+            {settings.token ? "重新验证" : "输入密码"}
+          </button>
+          {settings.token && <button type="button" onClick={onLogout}>退出登录</button>}
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function LoginModal({
+  open,
+  baseUrl,
+  busy,
+  error,
+  onClose,
+  onLogin,
+}: {
+  open: boolean;
+  baseUrl: string;
+  busy: boolean;
+  error: string;
+  onClose: () => void;
+  onLogin: (password: string) => void;
+}) {
+  const [password, setPassword] = useState("");
+
+  useEffect(() => {
+    if (open) setPassword("");
+  }, [open]);
+
+  return (
+    <Modal
+      open={open}
+      title="验证访问密码"
+      onClose={onClose}
+      footer={(
+        <button
+          className="primary"
+          type="button"
+          disabled={busy || password.length === 0}
+          onClick={() => onLogin(password)}
+        >
+          {busy ? "验证中…" : "验证并登录"}
+        </button>
+      )}
+    >
+      <form
+        className="settings-grid"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!busy && password) onLogin(password);
+        }}
+      >
+        <p className="auth-note">验证成功后，签名通行证将保存在当前浏览器中。</p>
+        {isInsecureRemoteUrl(baseUrl) && (
+          <p className="auth-warning">当前连接使用 HTTP，密码和通行证在网络传输中不会加密。</p>
+        )}
         <label className="field">
-          <span>API Token</span>
+          <span>访问密码</span>
           <input
             type="password"
-            value={draft.token}
-            onChange={(event) => setDraft({ ...draft, token: event.target.value })}
-            placeholder="服务端未配置时留空"
-            autoComplete="off"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="请输入控制台访问密码"
+            autoComplete="current-password"
           />
         </label>
+        {error && <p className="auth-error" role="alert">{error}</p>}
       </form>
     </Modal>
   );
@@ -450,4 +559,19 @@ function isViewName(value: unknown): value is ViewName {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isUnauthorized(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
+function isInsecureRemoteUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:"
+      && url.hostname !== "localhost"
+      && url.hostname !== "127.0.0.1";
+  } catch {
+    return false;
+  }
 }

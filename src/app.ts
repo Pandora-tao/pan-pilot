@@ -1,7 +1,7 @@
 import Fastify, { type FastifyBaseLogger } from "fastify";
 import multipart from "@fastify/multipart";
 import type { Transport } from "@modelcontextprotocol/client";
-import { timingSafeEqual } from "node:crypto";
+import { ConsoleAuth } from "./auth/console-auth.js";
 import { ArtifactStore } from "./artifacts/artifact-store.js";
 import {
   DEFAULT_MEDIA_MAX_BYTES,
@@ -29,6 +29,7 @@ import {
   registerChatRoute,
 } from "./routes/chat-route.js";
 import { registerConsoleRoute } from "./routes/console-route.js";
+import { registerConsoleAuthRoute } from "./routes/console-auth-route.js";
 import { registerHealthRoute } from "./routes/health-route.js";
 import { registerMediaRoute } from "./routes/media-route.js";
 import { registerModelsRoute } from "./routes/models-route.js";
@@ -76,6 +77,10 @@ export interface BuildAppOptions {
   modelClient?: ModelClient;
   modelRegistry?: ChatModelRegistry;
   apiToken?: string;
+  /** 控制台登录密码；只用于签发浏览器通行证，不会返回给客户端。 */
+  consolePassword?: string;
+  /** 浏览器通行证有效期；生产默认 30 天，测试可缩短。 */
+  consolePassportTtlMs?: number;
   logChatContent?: boolean;
   loggerInstance?: FastifyBaseLogger;
   /** 插件目录，默认取 PAN_PILOT_PLUGINS_DIR 或 ./plugins。 */
@@ -141,6 +146,13 @@ export function buildApp(options: BuildAppOptions = {}) {
       ? createChatModelRegistry()
       : createInjectedChatModelRegistry(options.modelClient));
   const apiToken = options.apiToken ?? process.env.PAN_PILOT_API_TOKEN ?? "";
+  const consoleAuth = new ConsoleAuth({
+    apiToken,
+    password: options.consolePassword ?? process.env.PAN_PILOT_CONSOLE_PASSWORD ?? "",
+    ...(options.consolePassportTtlMs === undefined
+      ? {}
+      : { passportTtlMs: options.consolePassportTtlMs }),
+  });
   const logChatContent = options.logChatContent
     ?? isEnabled(process.env.PAN_PILOT_LOG_CHAT_CONTENT);
   const contextOptions = options.contextOptions ?? contextOptionsFromEnv(process.env);
@@ -320,24 +332,24 @@ export function buildApp(options: BuildAppOptions = {}) {
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    // 健康检查保持公开；只有版本化业务 API 在配置 token 后启用 Bearer 鉴权。
+    // 密码登录公开；其他版本化业务 API 在配置 token 后要求原始 token 或签名通行证。
     if (!request.url.startsWith("/v1/") || !apiToken) return;
-    const provided = request.headers.authorization ?? "";
-    const expected = `Bearer ${apiToken}`;
-    const providedBuffer = Buffer.from(provided);
-    const expectedBuffer = Buffer.from(expected);
-    // 先校验长度，因为 timingSafeEqual 只接受等长 Buffer；等长时再做恒定时间比较。
-    if (providedBuffer.length !== expectedBuffer.length
-        || !timingSafeEqual(providedBuffer, expectedBuffer)) {
+    if (request.method === "POST" && request.url.split("?", 1)[0] === "/v1/auth/login") return;
+    const authorization = request.headers.authorization ?? "";
+    const credential = authorization.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length)
+      : "";
+    if (!consoleAuth.verifyCredential(credential)) {
       return reply.code(401).send({
         error: "UNAUTHORIZED",
-        message: "PanPilot API token 不正确",
+        message: "PanPilot 登录凭证无效或已过期",
       });
     }
   });
 
   registerHealthRoute(app);
   registerConsoleRoute(app);
+  registerConsoleAuthRoute(app, consoleAuth);
   registerCapabilitiesRoute(app);
   registerModelsRoute(app, modelRegistry);
   registerChatRoute(app, modelRegistry, toolRegistry, {
