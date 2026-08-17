@@ -159,6 +159,9 @@ export class DeepSeekClient implements ModelClient {
 
     const toolCalls = (message.tool_calls ?? []).map(toModelToolCall);
     const content = message.content?.trim() ?? "";
+    // DeepSeek 系模型在 message 上返回 reasoning_content（OpenAI 类型未声明）。
+    const reasoning = (message as { reasoning_content?: string }).reasoning_content
+      ?.trim();
 
     // 工具调用阶段通常没有正文；只有两者同时为空才是无效模型响应。
     if (!content && toolCalls.length === 0) {
@@ -171,6 +174,7 @@ export class DeepSeekClient implements ModelClient {
       toolCalls,
       model: response.model,
       ...(totalTokens === undefined ? {} : { totalTokens }),
+      ...(reasoning ? { reasoning } : {}),
     };
   }
 
@@ -207,6 +211,7 @@ export class DeepSeekClient implements ModelClient {
       { id?: string; name: string; arguments: string }
     >();
     let content = "";
+    let reasoning = "";
     let totalTokens: number | undefined;
     let model = "";
 
@@ -228,6 +233,15 @@ export class DeepSeekClient implements ModelClient {
         content += delta.content;
         emittedVisibleContent = true;
         yield { type: "content", content: delta.content };
+      }
+
+      // 思考内容同样按增量透传（DeepSeek 系模型在 delta 上返回 reasoning_content）。
+      const deltaReasoning = (delta as { reasoning_content?: string })
+        .reasoning_content;
+      if (deltaReasoning) {
+        reasoning += deltaReasoning;
+        emittedVisibleContent = true;
+        yield { type: "reasoning", content: deltaReasoning };
       }
 
       for (const toolCall of delta?.tool_calls ?? []) {
@@ -269,6 +283,7 @@ export class DeepSeekClient implements ModelClient {
       });
 
     const finalContent = content.trim();
+    const finalReasoning = reasoning.trim();
 
     // 工具调用阶段通常没有正文；只有两者同时为空才是无效模型响应。
     if (!finalContent && toolCalls.length === 0) {
@@ -282,6 +297,7 @@ export class DeepSeekClient implements ModelClient {
         toolCalls,
         model,
         ...(totalTokens === undefined ? {} : { totalTokens }),
+        ...(finalReasoning ? { reasoning: finalReasoning } : {}),
       },
     };
   }

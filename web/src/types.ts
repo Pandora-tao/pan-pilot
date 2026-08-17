@@ -194,6 +194,12 @@ export interface ChatContentEvent {
   content: string;
 }
 
+/** 模型思考/推理内容增量（思维链），客户端可折叠展示。 */
+export interface ChatReasoningEvent {
+  type: "reasoning";
+  content: string;
+}
+
 export interface ChatHeartbeatEvent {
   type: "heartbeat";
   elapsedMs: number;
@@ -223,6 +229,7 @@ export type ChatStreamEvent =
   | ChatStatusEvent
   | ChatToolStartEvent
   | ChatToolExecutionEvent
+  | ChatReasoningEvent
   | ChatContentEvent
   | ChatHeartbeatEvent
   | ChatWarningEvent
@@ -233,6 +240,8 @@ export interface ChatResult {
   content: string;
   modelId?: string;
   model: string;
+  /** 模型思考/推理内容（思维链），不持久化到会话。 */
+  reasoning?: string;
   steps?: number;
   totalTokens?: number;
   toolExecutions?: ToolExecution[];

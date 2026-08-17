@@ -53,6 +53,7 @@ import { dateCalculatorTool } from "./tools/date-calculator.js";
 import { getCurrentTimeTool } from "./tools/get-current-time.js";
 import { createListPluginsTool } from "./tools/list-plugins.js";
 import type { MultimodalClientProvider } from "./tools/media-common.js";
+import { createInstallPluginTool } from "./tools/install-plugin.js";
 import { createReadAttachmentTool } from "./tools/read-attachment.js";
 import { createSuggestPluginTool } from "./tools/suggest-plugin.js";
 import { textStatsTool } from "./tools/text-stats.js";
@@ -89,6 +90,11 @@ export interface BuildAppOptions {
   pluginAllowedHosts?: string;
   /** 逗号分隔的允许 ${env:NAME} 引用的环境变量名白名单。 */
   pluginAllowedEnvVars?: string;
+  /**
+   * 是否允许 Agent 通过 install_plugin 自主安装插件；默认读取
+   * PAN_PILOT_PLUGIN_AUTO_INSTALL，未配置时关闭（fail-closed）。
+   */
+  pluginAutoInstall?: boolean;
   /** http 插件执行用的 fetch 实现，测试注入替身。 */
   pluginFetchImpl?: typeof fetch;
   /** 媒体存储目录，默认取 PAN_PILOT_MEDIA_DIR 或 ./media。 */
@@ -231,6 +237,10 @@ export function buildApp(options: BuildAppOptions = {}) {
     current: undefined,
   };
   const mcpRef: { current: McpManager | undefined } = { current: undefined };
+  // Agent 自主安装默认 fail-closed；开启后 install_plugin 才可执行。
+  // 工具本身始终注册（供 plugins/install_plugin 自引用解析），开关只在执行时生效。
+  const pluginAutoInstall = options.pluginAutoInstall
+    ?? isEnabled(process.env.PAN_PILOT_PLUGIN_AUTO_INSTALL);
   // 内容内置工具 + 两个只读/建议管理工具构成完整 builtin 集合，
   // PluginManager（装载）与 PluginService（安装校验）
   // 使用完全一致的集合，避免 builtinNames/refs 在两个边界上漂移。
@@ -248,6 +258,12 @@ export function buildApp(options: BuildAppOptions = {}) {
       }
       return serviceRef.current;
     }),
+    createInstallPluginTool(() => {
+      if (serviceRef.current === undefined) {
+        throw new Error("插件服务尚未就绪");
+      }
+      return serviceRef.current;
+    }, pluginAutoInstall),
   ];
   const pluginManager = new PluginManager({
     pluginsDir,
@@ -350,7 +366,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   registerHealthRoute(app);
   registerConsoleRoute(app);
   registerConsoleAuthRoute(app, consoleAuth);
-  registerCapabilitiesRoute(app);
+  registerCapabilitiesRoute(app, { pluginAutoInstall });
   registerModelsRoute(app, modelRegistry);
   registerChatRoute(app, modelRegistry, toolRegistry, {
     logChatContent,
@@ -364,10 +380,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     heartbeatIntervalMs,
     slowWarningMs,
   });
-  registerPluginRoutes(app, pluginManager, pluginService, {
-    // 未配置 API token 时，插件副作用接口 fail-closed。
-    mutationAuthConfigured: apiToken !== "",
-  });
+  registerPluginRoutes(app, pluginManager, pluginService);
   registerArtifactRoute(app, artifactStore);
   registerScheduledTaskRoutes(app, scheduledTaskScheduler);
   registerSessionRoute(app, sessionStore);

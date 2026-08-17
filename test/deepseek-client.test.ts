@@ -404,15 +404,16 @@ describe("DeepSeekClient streaming", () => {
     }).rejects.toThrow("Model returned neither content nor tool calls");
   });
 
-  it("never forwards provider reasoning content to the client", async () => {
+  it("forwards provider reasoning content as reasoning events", async () => {
     const createCompletion = vi.fn<CreateChatCompletion>().mockResolvedValue(
       streamOf([
         chunk({
           choices: [{
-            // 部分厂商会把原始思维链放在 reasoning_content；协议只转发可见正文。
+            // 部分厂商把原始思维链放在 reasoning_content；协议现在把它作为
+            // reasoning 增量转发，由客户端决定展示，不再丢弃。
             delta: {
               content: "",
-              reasoning_content: "内部思维链：不应暴露给客户端",
+              reasoning_content: "内部思维链：应当转发给客户端展示",
             } as ChatCompletionChunk["choices"][number]["delta"],
             finish_reason: null,
             index: 0,
@@ -438,7 +439,7 @@ describe("DeepSeekClient streaming", () => {
     }
 
     expect(events).toEqual([
-      { type: "activity" },
+      { type: "reasoning", content: "内部思维链：应当转发给客户端展示" },
       { type: "content", content: "可见回答" },
       {
         type: "completion",
@@ -446,10 +447,32 @@ describe("DeepSeekClient streaming", () => {
           content: "可见回答",
           toolCalls: [],
           model: "response-model",
+          reasoning: "内部思维链：应当转发给客户端展示",
         },
       },
     ]);
-    expect(JSON.stringify(events)).not.toContain("思维链");
+  });
+
+  it("maps reasoning content on non-streaming completions", async () => {
+    const createCompletion = vi.fn<CreateChatCompletion>().mockResolvedValue(
+      completion({
+        content: "最终回答",
+        refusal: null,
+        role: "assistant",
+        reasoning_content: "先想清楚再回答",
+      } as ChatCompletion["choices"][number]["message"]),
+    );
+    const client = new DeepSeekClient({ createCompletion });
+
+    await expect(client.complete({
+      messages: [{ role: "user", content: "你好" }],
+      tools: [],
+    })).resolves.toEqual({
+      content: "最终回答",
+      toolCalls: [],
+      model: "response-model",
+      reasoning: "先想清楚再回答",
+    });
   });
 });
 

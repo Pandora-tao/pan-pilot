@@ -446,6 +446,29 @@ code {
   border-color: rgb(194 73 28 / 16%);
 }
 .message.error .message-card { border-color: rgb(194 69 47 / 34%); }
+.thinking {
+  margin-bottom: 10px;
+  padding: 9px 12px;
+  color: var(--muted);
+  background: rgb(255 255 255 / 52%);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  font-size: 12px;
+}
+.thinking summary {
+  cursor: pointer;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  user-select: none;
+}
+.thinking-content {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
 .message-content { white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.6; }
 .message-content a, .inline-link {
   display: inline;

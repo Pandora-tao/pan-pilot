@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-PanPilot 是一个用于学习和实现 AI Agent 的 TypeScript 工作区，提供 Fastify HTTP 服务。当前已实现带工具循环和 SSE 流式输出的聊天生成、声明式插件框架与单用户插件管理：Agent 通过 `suggest_plugin` 生成待安装建议，用户自行安装、忽略、启用、禁用和重载；副作用接口要求配置 API token，安装保持 manifest 校验、create-only 写入、原子重载与失败回滚。记忆与规划是后续能力。
+PanPilot 是一个用于学习和实现 AI Agent 的 TypeScript 工作区，提供 Fastify HTTP 服务。当前已实现带工具循环和 SSE 流式输出的聊天生成、声明式插件框架与单用户插件管理：Agent 通过 `suggest_plugin` 生成待安装建议，用户自行安装、忽略、启用、禁用和重载；`install_plugin` 允许 Agent 自主安装（默认关闭，`PAN_PILOT_PLUGIN_AUTO_INSTALL=true` 开启）；/v1 鉴权跟随全局 Bearer 钩子（配置 token 则全部要求鉴权，未配置则全部放行），安装保持 manifest 校验、create-only 写入、原子重载与失败回滚。记忆与规划是后续能力。
 
 ## 常用命令
 
@@ -33,7 +33,7 @@ src/app.ts       buildApp(options)：组装依赖 + 注册路由，不监听端�
 src/routes/      HTTP 适配层：校验、鉴权、状态码、日志，不含厂商细节
 src/agent/       应用层：ChatAgent 会话控制与工具循环
 src/model/       模型适配端口与实现
-src/tools/       工具定义、白名单注册、校验与执行（含 list_plugins/suggest_plugin）
+src/tools/       工具定义、白名单注册、校验与执行（含 list_plugins/suggest_plugin/install_plugin）
 src/plugins/     插件框架：manifest 校验、加载器、http 执行器、生命周期管理、
                  用户安装建议与直接管理（plugin-service / plugin-routes）
 src/search/      搜索提供端口（SearchClient）与 Bing 实现
@@ -63,6 +63,7 @@ Word/PDF/PPTX 工具位于独立 `pan-pilot-office-mcp` 项目，通过 MCP stdi
 - **错误码**：400 `INVALID_REQUEST`（zod 校验失败）、502 `CHAT_FAILED`（非流式）——对外隐藏 SDK/网络/密钥细节，详细原因只进服务端日志
 - **SSE 约定**：`/v1/chat` 的 `stream: true` 用 `text/event-stream` 返回；事件是 `data: {json}` 行，`type` 为 `content`/`tool_execution`/`done`/`error`；流建立后的失败以 `error` 事件返回，客户端断开则直接终止（响应流 close 时未正常写完会触发 AbortSignal）
 - **HTTP 不暴露工具细节**：`/v1/chat` 只返回工具执行摘要（`id`/`name`/`status`）；原始参数和工具结果只回填给模型，可能含敏感数据，不得默认回传 HTTP
+- **Agent 安装边界**：`suggest_plugin` 只生成建议（不落盘）；`install_plugin` 可落盘并重载注册表，但默认 fail-closed——未配置 `PAN_PILOT_PLUGIN_AUTO_INSTALL=true` 时调用必失败。两个工具都始终注册在 builtin 集合（供 `plugins/` 同名自引用解析），开关只在执行时生效
 - **请求校验用 zod `.strict()`**：拒绝未声明字段，避免拼写错误被静默忽略后仍然调用付费模型
 - **TS 严格配置**：`verbatimModuleSyntax` 要求类型导入必须写 `import type`；NodeNext ESM 要求相对导入带 `.js` 后缀；`noUncheckedIndexedAccess` 要求处理索引可能 undefined；`exactOptionalPropertyTypes` 禁止把 `undefined` 显式赋给可选属性
 - **注释与用户可见文案用中文**（项目约定），代码标识符用英文
@@ -84,8 +85,8 @@ const response = await app.inject({ method: "POST", url: "/v1/chat", payload: { 
 
 ## 环境变量
 
-`DEEPSEEK_API_KEY` 必填（缺失时 `DeepSeekClient` 构造函数直接抛错）。`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`（默认 `deepseek-v4-flash`）、`DEEPSEEK_RESOLVED_ADDRESS`（只覆盖 DeepSeek 主机的 DNS 解析结果，URL 域名保留以维持 Host/TLS SNI/证书校验）、`PAN_PILOT_API_TOKEN`（/v1 路由 Bearer 鉴权，用 `timingSafeEqual` 常时比较）、`PAN_PILOT_MEDIA_DIR`（受控附件目录）、`PAN_PILOT_MCP_CONFIG`（MCP Server 配置）、`SEARCH_BASE_URL`（搜索端点，默认 Bing）、`HOST`/`PORT`。完整清单见 `.env.example`；不要提交 `.env`。
-插件相关：`PAN_PILOT_PLUGINS_DIR`（插件目录）、`PAN_PILOT_PLUGIN_ALLOWED_HOSTS`（http 插件 host 白名单，默认拒绝）、`PAN_PILOT_PLUGIN_ALLOWED_ENV_VARS`（${env:NAME} 引用白名单，默认拒绝）。
+`DEEPSEEK_API_KEY` 必填（缺失时 `DeepSeekClient` 构造函数直接抛错）。`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`（默认 `deepseek-v4-flash`）、`DEEPSEEK_RESOLVED_ADDRESS`（只覆盖 DeepSeek 主机的 DNS 解析结果，URL 域名保留以维持 Host/TLS SNI/证书校验）、`PAN_PILOT_API_TOKEN`（/v1 路由 Bearer 鉴权，用 `timingSafeEqual` 常时比较；未配置时 /v1 全部放行，含插件变更）、`PAN_PILOT_MEDIA_DIR`（受控附件目录）、`PAN_PILOT_MCP_CONFIG`（MCP Server 配置）、`SEARCH_BASE_URL`（搜索端点，默认 Bing）、`HOST`/`PORT`。完整清单见 `.env.example`；不要提交 `.env`。
+插件相关：`PAN_PILOT_PLUGINS_DIR`（插件目录）、`PAN_PILOT_PLUGIN_ALLOWED_HOSTS`（http 插件 host 白名单，默认拒绝）、`PAN_PILOT_PLUGIN_ALLOWED_ENV_VARS`（${env:NAME} 引用白名单，默认拒绝）、`PAN_PILOT_PLUGIN_AUTO_INSTALL`（Agent 自主安装开关，默认关闭）。
 
 ## 构建与部署
 

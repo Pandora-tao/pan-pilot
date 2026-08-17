@@ -192,6 +192,8 @@ export function registerChatRoute(
         usage: result.totalTokens === undefined
           ? null
           : { totalTokens: result.totalTokens },
+        // 思考内容（思维链）默认随响应返回，由客户端决定展示；不写入会话历史。
+        ...(result.reasoning === undefined ? {} : { reasoning: result.reasoning }),
         execution: {
           mode: "chat",
           // 只返回执行摘要（id/name/status）；原始参数和工具结果可能含敏感数据，不回传 HTTP。

@@ -6,6 +6,7 @@ export type PluginOperationErrorCode =
   | "PLUGIN_NOT_FOUND"
   | "PLUGIN_SUGGESTION_NOT_FOUND"
   | "PLUGIN_APPLY_FAILED"
+  | "PLUGIN_AUTO_INSTALL_DISABLED"
   | "AUTH_NOT_CONFIGURED";
 
 export class PluginOperationError extends Error {

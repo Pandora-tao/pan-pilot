@@ -22,7 +22,9 @@ import {
 } from "../../api";
 import { withMotion } from "../../animations";
 import { downloadFileName } from "../../download-name";
+import { keepAwake, stopAwake } from "../../keep-awake";
 import { modelDisplayLabel } from "../../model-selection";
+import { randomId } from "../../random-id";
 import type {
   ChatMessage,
   ChatResult,
@@ -45,6 +47,8 @@ interface UiMessage {
   content: string;
   attachments?: MediaAsset[];
   tools?: ToolExecution[];
+  /** 模型思考/推理内容（思维链），仅本次会话展示，不持久化。 */
+  reasoning?: string;
   meta?: string;
   error?: string;
   streaming?: boolean;
@@ -138,6 +142,7 @@ export function ChatView({
   useEffect(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    stopAwake();
     const restored = initialMessages
       .filter((message) => message.role !== "system")
       .map(toUiMessage);
@@ -154,15 +159,17 @@ export function ChatView({
   async function sendMessage() {
     const text = draft.trim();
     if (!text || running) return;
+    // 长任务期间保持屏幕常亮，避免手机锁屏导致 SSE 连接被回收。
+    void keepAwake();
     const requestAttachments = selected;
     const userMessage: ChatMessage = { role: "user", content: text };
     const nextConversation = [...conversation, userMessage];
-    const assistantId = crypto.randomUUID();
+    const assistantId = randomId();
     setConversation(nextConversation);
     updateMessages((current) => [
       ...current,
       {
-        id: crypto.randomUUID(),
+        id: randomId(),
         role: "user",
         content: text,
         attachments: requestAttachments,
@@ -246,12 +253,24 @@ export function ChatView({
     } finally {
       abortRef.current = null;
       setRunning(false);
+      stopAwake();
     }
   }
 
   /** 消费一条 SSE 事件：同步更新助手消息与处理过程面板。 */
   function handleStreamEvent(event: ChatStreamEvent, assistantId: string) {
     switch (event.type) {
+      case "reasoning":
+        // 模型思考增量：追加到助手消息的思考块。
+        updateMessages((current) => current.map((message) => (
+          message.id === assistantId
+            ? {
+                ...message,
+                reasoning: (message.reasoning ?? "") + event.content,
+              }
+            : message
+        )));
+        break;
       case "content":
         updateMessages((current) => current.map((message) => (
           message.id === assistantId
@@ -317,6 +336,10 @@ export function ChatView({
             ...message,
             content: result.content || message.content || "空回复",
             tools: result.toolExecutions ?? message.tools,
+            // 流式路径已累积全部轮次的思考；done 结果只带最终轮的完整值，为空时保留累积。
+            ...(result.reasoning === undefined && message.reasoning === undefined
+              ? {}
+              : { reasoning: result.reasoning ?? message.reasoning }),
             meta: resultMeta(result, modelCatalog),
             streaming: false,
           }
@@ -516,6 +539,17 @@ function MessageRow({
     >
       <div className="message-author">{message.role === "user" ? "你" : "PanPilot"}</div>
       <div className="message-card">
+        {message.reasoning ? (
+          <details
+            className="thinking"
+            // 流式期间自动展开让用户看到思考进行，完成后收起可点击展开。
+            key={message.streaming ? "thinking-open" : "thinking-closed"}
+            open={message.streaming}
+          >
+            <summary>思考过程</summary>
+            <div className="thinking-content">{message.reasoning}</div>
+          </details>
+        ) : null}
         <div className="message-content">
           <LinkedContent text={message.content} client={client} toast={toast} />
           {message.streaming && <span className="cursor" />}
@@ -772,6 +806,7 @@ function normalizeNonStreaming(data: {
   message?: string;
   modelId?: string;
   model?: string;
+  reasoning?: string;
   usage?: { totalTokens?: number };
   execution?: {
     toolExecutions?: ToolExecution[];
@@ -783,6 +818,7 @@ function normalizeNonStreaming(data: {
     content: data.message ?? "",
     modelId: data.modelId,
     model: data.model ?? "",
+    ...(data.reasoning === undefined ? {} : { reasoning: data.reasoning }),
     totalTokens: data.usage?.totalTokens,
     toolExecutions: data.execution?.toolExecutions ?? [],
     context: data.execution?.context,
@@ -830,7 +866,7 @@ function kindLabel(kind: MediaAsset["kind"]): string {
 /** 把服务端会话消息还原为 UI 消息（system 已在上层过滤）。 */
 function toUiMessage(message: ChatSessionMessage): UiMessage {
   return {
-    id: crypto.randomUUID(),
+    id: randomId(),
     role: message.role === "assistant" ? "assistant" : "user",
     content: message.content,
     ...(message.attachments?.length

@@ -32,6 +32,8 @@ export interface AgentRunResult {
   content: string;
   model: string;
   totalTokens?: number;
+  /** 最终回答那轮的模型思考/推理内容（思维链），不持久化到会话。 */
+  reasoning?: string;
   /** 本轮实际执行的模型调用次数，含产出最终回答的那一次。 */
   steps: number;
   toolExecutions: readonly AgentToolExecution[];
@@ -45,14 +47,17 @@ export interface AgentRunResult {
  *
  * - status：阶段进展（model = 等待模型响应，tool = 即将执行工具），
  *   只在等待模型和执行工具之前发出，字段全部来自 Agent 静态枚举；
+ * - reasoning：模型思考/推理内容增量（思维链），可直接转发给客户端；
  * - content：模型文本增量，可直接转发给客户端；
  * - tool_start：工具开始执行，只含 id/name，不含参数；
  * - tool_execution：单次工具执行摘要（含 durationMs），发生在执行完成后；
  * - done：整轮结束，携带与 chat() 相同的最终结果。
  *
- * 任何事件都不得携带原始思维链、工具参数、附件正文或内部提示词。
+ * 事件可以携带模型思考内容（reasoning），但不得携带工具参数、附件正文
+ * 或内部提示词。
  */
 export type AgentStreamEvent =
+  | { type: "reasoning"; content: string }
   | { type: "content"; content: string }
   | { type: "status"; stage: "model" | "tool"; step: number }
   | { type: "tool_start"; id: string; name: string; step: number }
@@ -421,6 +426,10 @@ export class ChatAgent {
               case "activity":
                 // 仅用于刷新模型空闲计时，不能进入对外 SSE。
                 break;
+              case "reasoning":
+                // 模型思考内容增量：透传给客户端展示思考过程。
+                yield { type: "reasoning", content: event.content };
+                break;
               case "content":
                 yield { type: "content", content: event.content };
                 break;
@@ -448,6 +457,9 @@ export class ChatAgent {
               content: completion.content,
               model,
               ...(totalTokens === undefined ? {} : { totalTokens }),
+              ...(completion.reasoning === undefined
+                ? {}
+                : { reasoning: completion.reasoning }),
               steps,
               toolExecutions,
               ...(context.compactions === 0 ? {} : { context }),

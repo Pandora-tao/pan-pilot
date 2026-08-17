@@ -8,20 +8,15 @@ import {
 import type { PluginManager } from "./plugin-manager.js";
 import type { PluginService } from "./plugin-service.js";
 
-export interface PluginRouteOptions {
-  /** 未配置 token 时所有插件变更 fail-closed，只允许查看状态与建议。 */
-  mutationAuthConfigured: boolean;
-}
-
 /**
  * 单用户插件接口：用户可以直接安装、重载和启停；Agent 产生的建议由用户选择
- * 安装或忽略。副作用接口仍要求服务已配置 API Token，并沿用 /v1/* Bearer 鉴权。
+ * 安装或忽略。鉴权完全跟随全局 /v1 Bearer 钩子：配置了 PAN_PILOT_API_TOKEN
+ * 时所有 /v1/*（含插件变更）都要求正确令牌，未配置时全部放行。
  */
 export function registerPluginRoutes(
   app: FastifyInstance,
   pluginManager: PluginManager,
   pluginService: PluginService,
-  options: PluginRouteOptions,
 ): void {
   app.get("/v1/plugins", async () => ({
     plugins: pluginManager.listStatuses(),
@@ -32,7 +27,6 @@ export function registerPluginRoutes(
   }));
 
   app.post("/v1/plugins/install", async (request, reply) => {
-    if (!guardMutationAuth(reply, options.mutationAuthConfigured)) return;
     const parsed = installSchema.safeParse(request.body);
     if (!parsed.success) return invalidRequest(reply, parsed.error.issues);
     try {
@@ -45,7 +39,6 @@ export function registerPluginRoutes(
   });
 
   app.post("/v1/plugins/suggestions/:id/install", async (request, reply) => {
-    if (!guardMutationAuth(reply, options.mutationAuthConfigured)) return;
     try {
       return reply.code(201).send(pluginService.installSuggestion(
         (request.params as { id: string }).id,
@@ -56,7 +49,6 @@ export function registerPluginRoutes(
   });
 
   app.delete("/v1/plugins/suggestions/:id", async (request, reply) => {
-    if (!guardMutationAuth(reply, options.mutationAuthConfigured)) return;
     try {
       return {
         suggestion: pluginService.dismissSuggestion(
@@ -69,7 +61,6 @@ export function registerPluginRoutes(
   });
 
   app.post("/v1/plugins/reload", async (_request, reply) => {
-    if (!guardMutationAuth(reply, options.mutationAuthConfigured)) return;
     try {
       return { result: pluginService.reload() };
     } catch (error) {
@@ -78,11 +69,11 @@ export function registerPluginRoutes(
   });
 
   app.post("/v1/plugins/:name/enable", async (request, reply) => {
-    return setEnabled(request.params as { name: string }, reply, pluginService, options, true);
+    return setEnabled(request.params as { name: string }, reply, pluginService, true);
   });
 
   app.post("/v1/plugins/:name/disable", async (request, reply) => {
-    return setEnabled(request.params as { name: string }, reply, pluginService, options, false);
+    return setEnabled(request.params as { name: string }, reply, pluginService, false);
   });
 }
 
@@ -90,10 +81,8 @@ function setEnabled(
   params: { name: string },
   reply: FastifyReply,
   pluginService: PluginService,
-  options: PluginRouteOptions,
   enabled: boolean,
 ) {
-  if (!guardMutationAuth(reply, options.mutationAuthConfigured)) return;
   if (!PLUGIN_NAME_PATTERN.test(params.name)) {
     return reply.code(404).send({
       error: "PLUGIN_NOT_FOUND",
@@ -115,17 +104,6 @@ function invalidRequest(reply: FastifyReply, details: unknown): FastifyReply {
     message: "请求参数不正确",
     details,
   });
-}
-
-function guardMutationAuth(reply: FastifyReply, configured: boolean): boolean {
-  if (configured) return true;
-  reply.code(503).send({
-    error: "AUTH_NOT_CONFIGURED",
-    message:
-      "服务未配置 PAN_PILOT_API_TOKEN，插件安装与状态修改接口拒绝服务；"
-      + "配置令牌后重试",
-  });
-  return false;
 }
 
 function handlePluginError(reply: FastifyReply, error: unknown): FastifyReply {

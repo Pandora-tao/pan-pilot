@@ -42,10 +42,13 @@ export const agentCapabilities = {
       status: "available",
     },
     plugins: {
-      // Agent 只生成插件建议；用户可在控制台直接安装、启停和重载。
+      // Agent 生成插件建议；用户可在控制台直接安装、启停和重载。
+      // agentInstall 预留：PAN_PILOT_PLUGIN_AUTO_INSTALL=true 时由
+      // capabilities 路由声明为 available（Agent 可自主安装）。
       status: "available",
       userManaged: true,
       suggestions: true,
+      agentInstall: { status: "reserved" },
     },
     scheduledTasks: {
       status: "available",

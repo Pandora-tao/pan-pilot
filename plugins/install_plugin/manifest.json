@@ -1,0 +1,21 @@
+{
+  "apiVersion": "v1",
+  "name": "install_plugin",
+  "description": "安装一个声明式插件并立即启用其工具。副作用：把 manifest 写入 plugins 目录并原子重载工具注册表；HTTP 型插件会向 manifest 声明的 host 发起请求（受 PAN_PILOT_PLUGIN_ALLOWED_HOSTS 白名单约束，默认拒绝全部外部主机）。仅当用户明确要求安装或启用新工具时调用；默认关闭，需要管理员设置 PAN_PILOT_PLUGIN_AUTO_INSTALL=true 后重启服务",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "manifest": {
+        "type": "object",
+        "description": "待安装的完整插件 manifest"
+      }
+    },
+    "required": ["manifest"],
+    "additionalProperties": false
+  },
+  "executor": {
+    "type": "builtin",
+    "ref": "install_plugin"
+  },
+  "enabled": true
+}

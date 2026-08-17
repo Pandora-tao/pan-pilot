@@ -271,7 +271,13 @@ function ScheduleFields({ schedule, onChange }: { schedule: TaskSchedule; onChan
 }
 
 function defaultInput(models: ModelsResponse | null): ScheduledTaskInput { return { name: "", prompt: "", modelId: models?.models.find((model) => model.status === "available")?.id ?? "", enabled: true, schedule: defaultSchedule("daily") }; }
-function toInput(task: ScheduledTask): ScheduledTaskInput { return { name: task.name, prompt: task.prompt, modelId: task.modelId, enabled: task.enabled, schedule: structuredClone(task.schedule) }; }
+function toInput(task: ScheduledTask): ScheduledTaskInput { return { name: task.name, prompt: task.prompt, modelId: task.modelId, enabled: task.enabled, schedule: cloneJson(task.schedule) }; }
+/** structuredClone 降级：schedule 为纯 JSON，JSON 往返安全且兼容旧浏览器（Safari < 15.4）。 */
+function cloneJson<T>(value: T): T {
+  return typeof structuredClone === "function"
+    ? structuredClone(value)
+    : JSON.parse(JSON.stringify(value)) as T;
+}
 function defaultSchedule(type: TaskSchedule["type"]): TaskSchedule { if (type === "once") return { type, at: "" }; if (type === "daily") return { type, time: "09:00" }; if (type === "weekly") return { type, weekday: 1, time: "09:00" }; return { type, expression: "0 9 * * 1-5" }; }
 function scheduleLabel(schedule: TaskSchedule): string { if (schedule.type === "once") return `单次 · ${schedule.at}`; if (schedule.type === "daily") return `每天 · ${schedule.time}`; if (schedule.type === "weekly") return `${["周日", "周一", "周二", "周三", "周四", "周五", "周六"][schedule.weekday]} · ${schedule.time}`; return `Cron · ${schedule.expression}`; }
 function modelLabel(models: ModelsResponse | null, id: string): string { return models?.models.find((model) => model.id === id)?.label ?? id; }

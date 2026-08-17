@@ -267,25 +267,28 @@ describe("/v1/plugins direct user management", () => {
     await app.close();
   });
 
-  it("fails closed for mutations when no API token is configured", async () => {
+  it("allows plugin mutations without a token when auth is not configured", async () => {
     fixtureRoot = createPluginFixture({});
     const app = buildApp({
       modelClient: dummyModelClient(),
       pluginsDir: fixtureRoot,
     });
 
-    for (const request of [
-      { method: "POST" as const, url: "/v1/plugins/reload" },
-      {
-        method: "POST" as const,
-        url: "/v1/plugins/install",
-        payload: { manifest: builtinAliasManifest("calc_alias", "calculator") },
-      },
-    ]) {
-      const response = await app.inject(request);
-      expect(response.statusCode).toBe(503);
-      expect(response.json()).toMatchObject({ error: "AUTH_NOT_CONFIGURED" });
-    }
+    const install = await app.inject({
+      method: "POST",
+      url: "/v1/plugins/install",
+      payload: { manifest: builtinAliasManifest("calc_alias", "calculator") },
+    });
+    expect(install.statusCode).toBe(201);
+    expect(install.json().result).toMatchObject({ applied: true });
+
+    const reload = await app.inject({ method: "POST", url: "/v1/plugins/reload" });
+    expect(reload.statusCode).toBe(200);
+
+    const list = await app.inject({ method: "GET", url: "/v1/plugins" });
+    expect(list.json().plugins).toEqual([
+      expect.objectContaining({ name: "calc_alias", state: "loaded" }),
+    ]);
     await app.close();
   });
 });
