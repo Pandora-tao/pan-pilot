@@ -1,6 +1,5 @@
 import { RefreshCw } from "lucide-react";
 import { StatusBadge } from "../../components/StatusBadge";
-import { ViewHeader } from "../../components/ViewHeader";
 import type { CapabilitiesResponse, Capability } from "../../types";
 
 const descriptions: Record<string, string> = {
@@ -22,16 +21,15 @@ interface CapabilitiesViewProps {
 export function CapabilitiesView({ data, refresh }: CapabilitiesViewProps) {
   const capabilities = Object.entries(data?.capabilities ?? {});
   return (
-    <section className="view active">
-      <ViewHeader
-        title="能力状态"
-        description="读取服务端真实能力声明，区分可用、阻塞和预留状态。"
-        actions={(
+    <div className="capabilities-body">
+      <div className="tab-toolbar">
+        <p>读取服务端真实能力声明，区分可用、阻塞和预留状态。</p>
+        <div className="view-actions">
           <button type="button" onClick={() => void refresh()}>
             <RefreshCw aria-hidden="true" size={16} />刷新
           </button>
-        )}
-      />
+        </div>
+      </div>
       <div className="section-stack">
         {capabilities.length ? (
           <div className="cap-grid">
@@ -43,7 +41,7 @@ export function CapabilitiesView({ data, refresh }: CapabilitiesViewProps) {
           <div className="surface empty-tip">正在获取能力状态。</div>
         )}
       </div>
-    </section>
+    </div>
   );
 }
 

@@ -61,8 +61,12 @@ pnpm dev
 token；网页控制台通过 `POST /v1/auth/login` 提交
 `PAN_PILOT_CONSOLE_PASSWORD`，换取默认有效期 30 天的 HMAC 签名通行证。
 原始 API token 不会下发到浏览器；密码修改后旧通行证自动失效。登录接口按客户端
-IP 在 10 分钟内最多接受 5 次错误尝试。未配置 API token 时 `/v1/*` 开放访问，
-未配置控制台密码时登录接口 fail-closed 返回 503；`/health` 始终公开。
+IP 在 10 分钟内最多接受 5 次错误尝试。未配置 API token 时 `/v1/*` 开放访问。
+`GET /v1/auth/status` 公开返回 `{ loginRequired }`，只有 API token 与控制台密码
+都配置时前端才要求登录：本地开发未配置密码时控制台完全不弹「验证访问密码」框，
+生产部署（两者都配置）在无有效通行证时弹出且**不可关闭**（无 X 按钮、Escape 与
+点击遮罩均无效，只能输入正确密码登录）。未配置控制台密码时登录接口 fail-closed
+返回 503；`/health` 始终公开。
 
 ### 出站代理（多模态调用）
 
@@ -182,9 +186,10 @@ HTTP 接口会剥离 `checkpoint` 与 `activity`，只返回安全摘要。
 - `DEEPSEEK_RESOLVED_ADDRESS`：部署环境的系统 DNS 把 DeepSeek 解析到不可达
   地址时，可只为 PanPilot 覆盖该主机的 DNS 结果；不修改全局 DNS，URL 中的
   域名保留以维持 Host/TLS SNI/证书校验。
-- `PAN_PILOT_API_TOKEN`：`/v1/*` 的 Bearer 鉴权令牌。
+- `PAN_PILOT_API_TOKEN`：`/v1/*` 的 Bearer 鉴权令牌；未配置时 `/v1/*` 开放访问。
 - `PAN_PILOT_CONSOLE_PASSWORD`：控制台访问密码，只用于换取浏览器签名通行证；
-  真实值只放运行环境，不提交到仓库。
+  与 API token 都配置时，生产控制台在无有效通行证时弹出不可关闭的验证框；
+  本地未配置密码不弹框。真实值只放运行环境，不提交到仓库。
 - `PAN_PILOT_ARTIFACTS_DIR`：单文件代码产物目录，默认 `./artifacts`；
   生产应配置为 release 外持久目录。
 - `PAN_PILOT_PLUGINS_DIR`：声明式插件目录，默认 `./plugins`。

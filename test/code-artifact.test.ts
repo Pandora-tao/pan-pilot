@@ -128,6 +128,47 @@ describe("controlled code artifacts", () => {
     await app.close();
   });
 
+  it("serves HEAD artifact headers (filename) without a body", async () => {
+    const root = await tempDir("panpilot-artifact-head-");
+    const artifactsDir = path.join(root, "artifacts");
+    const store = new ArtifactStore(artifactsDir);
+    const saved = await store.save({
+      name: "推箱子",
+      format: "html",
+      content: "<!doctype html><title>Sokoban</title>",
+    });
+    const app = buildApp({
+      modelClient: unusedModelClient(),
+      apiToken: "test-token",
+      artifactsDir,
+      scheduledTasksDir: path.join(root, "scheduled"),
+      sessionsDir: path.join(root, "sessions"),
+    });
+
+    const response = await app.inject({
+      method: "HEAD",
+      url: `/v1/artifacts/${saved.id}`,
+      headers: { authorization: "Bearer test-token" },
+    });
+    expect(response.statusCode).toBe(200);
+    // Fastify 的 head 请求不带 body。
+    expect(response.body).toBe("");
+    expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.headers["content-disposition"]).toContain("attachment");
+    // RFC 5987 文件名应可被前端解析为真实中文名。
+    expect(response.headers["content-disposition"]).toContain(
+      `filename*=UTF-8''${encodeURIComponent("推箱子.html")}`,
+    );
+    const headResponse = new Response("", {
+      headers: { "content-disposition": String(response.headers["content-disposition"]) },
+    });
+    expect(downloadFileName(headResponse, "fallback.txt")).toBe("推箱子.html");
+    expect(Number(response.headers["content-length"])).toBe(
+      Buffer.byteLength(saved.content, "utf8"),
+    );
+    await app.close();
+  });
+
   it("extracts an RFC 5987 download name without accepting path components", () => {
     const named = new Response("", {
       headers: {

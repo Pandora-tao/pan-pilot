@@ -1,16 +1,25 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import path from "node:path";
 import { z } from "zod";
 import {
   MEDIA_ID_PATTERN,
   MediaStore,
   MediaStoreError,
+  type StoredMedia,
 } from "../media/media-store.js";
 import { attachmentHeader } from "./download-headers.js";
 
 const mediaParamsSchema = z.object({
   mediaId: z.string().regex(MEDIA_ID_PATTERN),
 }).strict();
+
+/** 媒体附件的响应头；GET 与 Fastify 自动提供的 HEAD 共用（HEAD 不发 body）。 */
+function setMediaHeaders(reply: FastifyReply, media: StoredMedia): void {
+  reply
+    .header("content-type", media.meta.mimeType)
+    .header("content-disposition", attachmentHeader(media.meta.name))
+    .header("content-length", media.meta.size);
+}
 
 /**
  * 附件适配层：
@@ -106,11 +115,8 @@ export function registerMediaRoute(
         });
       }
 
-      return reply
-        .header("content-type", media.meta.mimeType)
-        .header("content-disposition", attachmentHeader(media.meta.name))
-        .header("content-length", media.buffer.length)
-        .send(media.buffer);
+      setMediaHeaders(reply, media);
+      return reply.send(media.buffer);
     },
   );
 

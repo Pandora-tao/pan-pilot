@@ -348,9 +348,12 @@ export function buildApp(options: BuildAppOptions = {}) {
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    // 密码登录公开；其他版本化业务 API 在配置 token 后要求原始 token 或签名通行证。
+    // 密码登录与鉴权状态公开；其他版本化业务 API 在配置 token 后要求原始 token 或签名通行证。
     if (!request.url.startsWith("/v1/") || !apiToken) return;
-    if (request.method === "POST" && request.url.split("?", 1)[0] === "/v1/auth/login") return;
+    const pathname = request.url.split("?", 1)[0];
+    const isPublicAuthEndpoint = (request.method === "POST" && pathname === "/v1/auth/login")
+      || (request.method === "GET" && pathname === "/v1/auth/status");
+    if (isPublicAuthEndpoint) return;
     const authorization = request.headers.authorization ?? "";
     const credential = authorization.startsWith("Bearer ")
       ? authorization.slice("Bearer ".length)

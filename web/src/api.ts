@@ -54,6 +54,11 @@ export class ApiClient {
     return this.json("/v1/auth/login", jsonBody("POST", { password }));
   }
 
+  /** 服务端是否要求控制台密码登录；只读公开，不携带旧通行证。 */
+  authStatus(): Promise<{ loginRequired: boolean }> {
+    return this.json("/v1/auth/status");
+  }
+
   health(): Promise<{ status: string }> {
     return this.json("/health");
   }

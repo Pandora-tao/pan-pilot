@@ -76,6 +76,37 @@ describe("media routes", () => {
     expect(download.rawPayload.equals(png)).toBe(true);
   });
 
+  it("serves HEAD media headers (filename/length) without a body", async () => {
+    const app = buildWithToken();
+    const png = pngBytes();
+
+    const upload = await app.inject({
+      method: "POST",
+      url: "/v1/media",
+      headers: {
+        ...AUTH,
+        "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
+      },
+      payload: multipartBody("file", "截图.png", "image/png", png, BOUNDARY),
+    });
+    expect(upload.statusCode).toBe(201);
+    const { mediaId } = upload.json() as { mediaId: string };
+
+    const head = await app.inject({
+      method: "HEAD",
+      url: `/v1/media/${mediaId}`,
+      headers: AUTH,
+    });
+    expect(head.statusCode).toBe(200);
+    expect(head.body).toBe("");
+    expect(head.headers["content-type"]).toBe("image/png");
+    expect(head.headers["content-disposition"]).toContain("attachment");
+    expect(head.headers["content-disposition"]).toContain(
+      `filename*=UTF-8''${encodeURIComponent("截图.png")}`,
+    );
+    expect(Number(head.headers["content-length"])).toBe(png.length);
+  });
+
   it("uploads an MP3 as audio media", async () => {
     const app = buildWithToken();
     const mp3 = mp3Bytes();

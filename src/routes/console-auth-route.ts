@@ -17,6 +17,9 @@ interface LoginBody {
 export function registerConsoleAuthRoute(app: FastifyInstance, auth: ConsoleAuth): void {
   const attempts = new Map<string, LoginAttempt>();
 
+  // 公开只读状态：只有服务端同时配置了 API token 与控制台密码时，前端才需要弹登录框。
+  app.get("/v1/auth/status", async () => ({ loginRequired: auth.configured }));
+
   app.post<{ Body: LoginBody }>("/v1/auth/login", {
     schema: {
       body: {

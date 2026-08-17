@@ -15,13 +15,8 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  ApiClient,
-  downloadBlob,
-  readError,
-} from "../../api";
+import { ApiClient, readError } from "../../api";
 import { withMotion } from "../../animations";
-import { downloadFileName } from "../../download-name";
 import { keepAwake, stopAwake } from "../../keep-awake";
 import { modelDisplayLabel } from "../../model-selection";
 import { randomId } from "../../random-id";
@@ -34,6 +29,7 @@ import type {
   ModelsResponse,
   ToolExecution,
 } from "../../types";
+import { FileLink } from "./FileLink";
 import { SseEventParser } from "./sse-events";
 
 const SYSTEM_MESSAGE: ChatMessage = {
@@ -680,25 +676,12 @@ function LinkedContent({
     if (index > last) parts.push(text.slice(last, index));
     if (raw.startsWith("/v1/media/") || raw.startsWith("/v1/artifacts/")) {
       parts.push(
-        <button
-          className="inline-link"
-          type="button"
+        <FileLink
           key={`${raw}-${index}`}
-          onClick={async () => {
-            try {
-              const response = await client.request(raw);
-              if (!response.ok) throw new Error(await readError(response));
-              const fallback = raw.startsWith("/v1/media/")
-                ? "office-document"
-                : "code-artifact.txt";
-              downloadBlob(await response.blob(), downloadFileName(response, fallback));
-            } catch (error) {
-              toast("下载失败：" + errorMessage(error));
-            }
-          }}
-        >
-          {raw}
-        </button>,
+          url={raw}
+          client={client}
+          toast={toast}
+        />,
       );
     } else {
       parts.push(

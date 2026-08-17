@@ -2,7 +2,6 @@ import { Download, Power, RefreshCw, RotateCcw, X } from "lucide-react";
 import { useState } from "react";
 import { ApiClient } from "../../api";
 import { StatusBadge } from "../../components/StatusBadge";
-import { ViewHeader } from "../../components/ViewHeader";
 import type { PluginStatus, PluginSuggestion } from "../../types";
 
 interface PluginsViewProps {
@@ -49,27 +48,23 @@ export function PluginsView({
   }
 
   return (
-    <section className="view active">
-      <ViewHeader
-        title="插件"
-        description="选择安装 Agent 推荐的插件，或粘贴 manifest 安装；已安装插件可直接启用和禁用。"
-        actions={(
-          <>
-            <button type="button" onClick={() => void refresh()}>
-              <RefreshCw aria-hidden="true" size={16} />刷新
-            </button>
-            <button
-              className="primary"
-              type="button"
-              disabled={busyKey !== ""}
-              onClick={() => void run("reload", () => client.reloadPlugins(), "插件已重新加载")}
-            >
-              <RotateCcw aria-hidden="true" size={16} />重新加载
-            </button>
-          </>
-        )}
-      />
-
+    <div className="plugins-body">
+      <div className="tab-toolbar">
+        <p>选择安装 Agent 推荐的插件，或粘贴 manifest 安装；已安装插件可直接启用和禁用。</p>
+        <div className="view-actions">
+          <button type="button" onClick={() => void refresh()}>
+            <RefreshCw aria-hidden="true" size={16} />刷新
+          </button>
+          <button
+            className="primary"
+            type="button"
+            disabled={busyKey !== ""}
+            onClick={() => void run("reload", () => client.reloadPlugins(), "插件已重新加载")}
+          >
+            <RotateCcw aria-hidden="true" size={16} />重新加载
+          </button>
+        </div>
+      </div>
       <div className="plugin-grid">
         <section className="surface section-stack">
           <div className="section-head">
@@ -191,7 +186,7 @@ export function PluginsView({
           )}
         </section>
       </div>
-    </section>
+    </div>
   );
 }
 

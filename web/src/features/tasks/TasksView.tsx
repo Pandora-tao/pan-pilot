@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiClient } from "../../api";
 import { Modal } from "../../components/Modal";
 import { StatusBadge } from "../../components/StatusBadge";
-import { ViewHeader } from "../../components/ViewHeader";
 import type {
   ModelsResponse,
   ScheduledTask,
@@ -65,21 +64,18 @@ export function TasksView({ client, modelCatalog, toast, onCountChange }: TasksV
 
   const timeZone = data?.serverTimeZone ?? "正在读取服务器时区";
   return (
-    <section className="view active">
-      <ViewHeader
-        title="任务"
-        description={`按服务器本地时间运行独立 Agent。当前时区：${timeZone}`}
-        actions={(
-          <>
-            <button type="button" onClick={() => void refresh()}>
-              <RefreshCw aria-hidden="true" size={16} />刷新
-            </button>
-            <button className="primary" type="button" onClick={() => setEditor("new")}>
-              <CalendarPlus aria-hidden="true" size={16} />新建任务
-            </button>
-          </>
-        )}
-      />
+    <div className="tasks-body">
+      <div className="tab-toolbar">
+        <p>按服务器本地时间运行独立 Agent。当前时区：{timeZone}</p>
+        <div className="view-actions">
+          <button type="button" onClick={() => void refresh()}>
+            <RefreshCw aria-hidden="true" size={16} />刷新
+          </button>
+          <button className="primary" type="button" onClick={() => setEditor("new")}>
+            <CalendarPlus aria-hidden="true" size={16} />新建任务
+          </button>
+        </div>
+      </div>
 
       <section className="surface section-stack task-section">
         <div className="section-head">
@@ -185,7 +181,7 @@ export function TasksView({ client, modelCatalog, toast, onCountChange }: TasksV
       <Modal open={deleteTarget !== null} title="删除任务" onClose={() => setDeleteTarget(null)} footer={(
         <><button type="button" onClick={() => setDeleteTarget(null)}>取消</button><button className="danger" type="button" disabled={busy !== ""} onClick={() => deleteTarget && void action("delete", () => client.deleteScheduledTask(deleteTarget.id), `任务 ${deleteTarget.name} 已删除`).then((deleted) => { if (deleted) setDeleteTarget(null); })}>确认删除</button></>
       )}><p>删除后不会再触发，已有运行历史仍会保留。</p></Modal>
-    </section>
+    </div>
   );
 }
 

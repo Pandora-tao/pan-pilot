@@ -9,9 +9,18 @@ interface ModalProps {
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  /** 是否允许用户主动关闭（X 按钮 / Escape / 点击遮罩）；默认 true。 */
+  closable?: boolean;
 }
 
-export function Modal({ open, title, onClose, children, footer }: ModalProps) {
+export function Modal({
+  open,
+  title,
+  onClose,
+  children,
+  footer,
+  closable = true,
+}: ModalProps) {
   const panelRef = useRef<HTMLElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
 
@@ -47,18 +56,23 @@ export function Modal({ open, title, onClose, children, footer }: ModalProps) {
     document.body.style.overflow = "hidden";
     panelRef.current?.querySelector<HTMLElement>("button, input, textarea")?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (closable && event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [onClose, open]);
+  }, [closable, onClose, open]);
 
   if (!open) return null;
   return (
-    <div ref={backdropRef} className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <div
+      ref={backdropRef}
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={closable ? onClose : undefined}
+    >
       <section
         ref={panelRef}
         className="modal"
@@ -69,9 +83,11 @@ export function Modal({ open, title, onClose, children, footer }: ModalProps) {
       >
         <div className="dialog-head">
           <h2 id="modal-title">{title}</h2>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
-            <X aria-hidden="true" size={19} />
-          </button>
+          {closable && (
+            <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
+              <X aria-hidden="true" size={19} />
+            </button>
+          )}
         </div>
         <div className="dialog-body">{children}</div>
         {footer && <div className="dialog-actions">{footer}</div>}

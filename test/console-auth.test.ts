@@ -117,3 +117,33 @@ describe("console password login route", () => {
     await app.close();
   });
 });
+
+describe("/v1/auth/status", () => {
+  it("reports loginRequired for anonymous clients when both token and password are configured", async () => {
+    const app = buildApp({
+      modelClient,
+      apiToken: "internal-secret",
+      consolePassword: "test-password",
+    });
+    const response = await app.inject({ method: "GET", url: "/v1/auth/status" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ loginRequired: true });
+    await app.close();
+  });
+
+  it("reports loginRequired false when the console password is not configured", async () => {
+    const app = buildApp({ modelClient, apiToken: "internal-secret", consolePassword: "" });
+    const response = await app.inject({ method: "GET", url: "/v1/auth/status" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ loginRequired: false });
+    await app.close();
+  });
+
+  it("reports loginRequired false when no auth is configured at all", async () => {
+    const app = buildApp({ modelClient });
+    const response = await app.inject({ method: "GET", url: "/v1/auth/status" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ loginRequired: false });
+    await app.close();
+  });
+});

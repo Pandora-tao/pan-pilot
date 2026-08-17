@@ -1,4 +1,7 @@
-export type ViewName = "chat" | "plugins" | "tasks" | "capabilities";
+export type ViewName = "chat" | "settings";
+
+/** 设置页内的页签：连接 / 插件 / 任务 / 能力。 */
+export type SettingsTab = "connection" | "plugins" | "tasks" | "capabilities";
 
 export interface ConsoleSettings {
   baseUrl: string;
