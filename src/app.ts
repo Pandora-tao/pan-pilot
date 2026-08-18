@@ -50,6 +50,7 @@ import { createAnalyzeImageTool } from "./tools/analyze-image.js";
 import { calculatorTool } from "./tools/calculator.js";
 import { createCodeArtifactTool } from "./tools/create-code-artifact.js";
 import { dateCalculatorTool } from "./tools/date-calculator.js";
+import { createFilesystemTools } from "./tools/filesystem.js";
 import { getCurrentTimeTool } from "./tools/get-current-time.js";
 import { createListPluginsTool } from "./tools/list-plugins.js";
 import type { MultimodalClientProvider } from "./tools/media-common.js";
@@ -185,6 +186,11 @@ export function buildApp(options: BuildAppOptions = {}) {
         options.mediaDir ?? process.env.PAN_PILOT_MEDIA_DIR ?? "./media",
         { maxBytes: mediaMaxBytes },
       );
+  // 文件系统工具默认 fail-closed：未配置 PAN_PILOT_FS_ENABLED=true 或不提供
+  // 允许根目录时不注册 fs_* 工具，模型根本看不到也就不可能调用。
+  const fsRoots = parseFsRoots(process.env.PAN_PILOT_FS_ROOTS);
+  const fsEnabled = isEnabled(process.env.PAN_PILOT_FS_ENABLED)
+    && fsRoots.length > 0;
   // 测试注入的客户端直接复用；否则懒加载厂商实现，未配置密钥时服务仍可启动。
   const injectedMultimodal = options.multimodalClient;
   const multimodalProvider: MultimodalClientProvider = injectedMultimodal
@@ -204,6 +210,8 @@ export function buildApp(options: BuildAppOptions = {}) {
     createAnalyzeAudioTool(mediaStore, multimodalProvider),
     createTranscribeAudioTool(mediaStore, multimodalProvider),
     createReadAttachmentTool(mediaStore),
+    // 文件系统工具仅当开启且配置了允许根目录时注册（默认关闭）。
+    ...(fsEnabled ? createFilesystemTools({ roots: fsRoots }) : []),
   ];
   const toolRegistry = new ToolRegistry();
   if (options.mcpConfig !== undefined && options.mcpConfigPath !== undefined) {
@@ -369,7 +377,11 @@ export function buildApp(options: BuildAppOptions = {}) {
   registerHealthRoute(app);
   registerConsoleRoute(app);
   registerConsoleAuthRoute(app, consoleAuth);
-  registerCapabilitiesRoute(app, { pluginAutoInstall });
+  registerCapabilitiesRoute(app, {
+    pluginAutoInstall,
+    filesystemEnabled: fsEnabled,
+    filesystemRoots: fsRoots,
+  });
   registerModelsRoute(app, modelRegistry);
   registerChatRoute(app, modelRegistry, toolRegistry, {
     logChatContent,
@@ -426,6 +438,11 @@ function parseNameList(value: string | undefined): string[] {
     .split(",")
     .map((name) => name.trim())
     .filter((name) => name.length > 0);
+}
+
+/** 文件系统允许根目录白名单；路径可为相对路径（按工作目录解析为绝对路径）。 */
+function parseFsRoots(value: string | undefined): string[] {
+  return parseNameList(value);
 }
 
 function contextOptionsFromEnv(

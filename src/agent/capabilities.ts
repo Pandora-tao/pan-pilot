@@ -41,6 +41,11 @@ export const agentCapabilities = {
       // web_search 工具已接入工具循环（默认 Bing 网页搜索，无 Key）。
       status: "available",
     },
+    filesystem: {
+      // 内建 fs_* 工具由 PAN_PILOT_FS_ENABLED + PAN_PILOT_FS_ROOTS 决定是否注册；
+      // 运行时状态由 capabilities 路由按实际注册结果覆盖为 available/reserved。
+      status: "reserved",
+    },
     plugins: {
       // Agent 生成插件建议；用户可在控制台直接安装、启停和重载。
       // agentInstall 预留：PAN_PILOT_PLUGIN_AUTO_INSTALL=true 时由

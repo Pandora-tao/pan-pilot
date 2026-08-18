@@ -78,6 +78,8 @@ interface ChatViewProps {
   modelCatalog: ModelsResponse | null;
   selectedModelId: string;
   sessionKey: number;
+  /** 当前会话标题；新对话（尚未命名）时缺省。 */
+  sessionTitle?: string;
   initialMessages: ChatSessionMessage[];
   onDraftChange: (value: string) => void;
   onModelChange: (modelId: string) => void;
@@ -97,6 +99,7 @@ export function ChatView({
   modelCatalog,
   selectedModelId,
   sessionKey,
+  sessionTitle,
   initialMessages,
   onDraftChange,
   onModelChange,
@@ -340,6 +343,9 @@ export function ChatView({
     <section className="view active">
       <div className="chat-layout">
         <div className="surface conversation">
+          <div className="chat-heading">
+            <span className="chat-title">{sessionTitle || "新对话"}</span>
+          </div>
           <div className="chat-log" aria-live="polite">
             {messages.length === 0 && (
               <div className="empty-tip">输入消息开始对话。PanPilot 会按需调用已启用的工具。</div>

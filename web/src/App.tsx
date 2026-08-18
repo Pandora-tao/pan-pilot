@@ -347,6 +347,10 @@ export function App() {
     capabilities: Object.keys(capabilities?.capabilities ?? {}).length,
   };
 
+  const currentTitle = currentSessionId
+    ? sessions.find((session) => session.id === currentSessionId)?.title
+    : undefined;
+
   return (
     <>
       <div className={`app-shell${activeView === "settings" ? " app-shell--settings" : ""}`}>
@@ -372,6 +376,7 @@ export function App() {
                 onDraftChange={setChatDraft}
                 onModelChange={setSelectedModelId}
                 sessionKey={sessionKey}
+                sessionTitle={currentTitle}
                 initialMessages={sessionMessages}
                 onSaveSession={saveSession}
                 onNewSession={newSession}
