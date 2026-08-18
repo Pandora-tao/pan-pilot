@@ -2,8 +2,6 @@ import { Plus, Settings, Trash2 } from "lucide-react";
 import type { SessionSummary } from "../types";
 
 interface SidebarProps {
-  health: "checking" | "ok" | "error";
-  baseUrl: string;
   sessions: SessionSummary[];
   currentSessionId: string | null;
   onNewSession: () => void;
@@ -12,10 +10,8 @@ interface SidebarProps {
   onOpenSettings: () => void;
 }
 
-/** 左侧边栏：品牌、健康状态、历史会话与底部「设置」入口。设置页开启时整栏隐藏。 */
+/** 左侧边栏：品牌、历史会话与底部「设置」入口。设置页开启时整栏隐藏。 */
 export function Sidebar({
-  health,
-  baseUrl,
   sessions,
   currentSessionId,
   onNewSession,
@@ -33,28 +29,18 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="health" title="GET /health">
-        <span className={`dot ${health}`} />
-        <span>
-          <strong>
-            {health === "ok" ? "服务正常" : health === "error" ? "无法连接" : "检查中"}
-          </strong>
-          <span>{baseUrl}</span>
-        </span>
-      </div>
-
       <div className="sidebar-sessions">
+        <button
+          className="sessions-new"
+          type="button"
+          onClick={onNewSession}
+          title="新建会话"
+        >
+          <Plus aria-hidden="true" size={15} />
+          新建对话
+        </button>
         <div className="sessions-head">
           <span className="sessions-label">历史会话</span>
-          <button
-            className="sessions-new"
-            type="button"
-            onClick={onNewSession}
-            title="新建会话"
-          >
-            <Plus aria-hidden="true" size={13} />
-            新建
-          </button>
         </div>
         <div className="session-list">
           {sessions.length === 0 ? (

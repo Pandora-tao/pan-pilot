@@ -355,8 +355,6 @@ export function App() {
     <>
       <div className={`app-shell${activeView === "settings" ? " app-shell--settings" : ""}`}>
         <Sidebar
-          health={health}
-          baseUrl={settings.baseUrl}
           sessions={sessions}
           currentSessionId={currentSessionId}
           onNewSession={newSession}

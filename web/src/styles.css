@@ -170,7 +170,6 @@ code {
 }
 .brand h1 { margin: 0; font-size: 17px; font-weight: 760; letter-spacing: -0.01em; }
 .brand p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
-.sidebar .health { margin: 12px 14px 0; }
 .sidebar-sessions {
   flex: 1 1 auto;
   min-height: 0;
@@ -283,15 +282,25 @@ code {
   letter-spacing: 0.14em;
 }
 .sessions-new {
-  min-height: 26px;
-  padding: 2px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 10px;
   color: var(--accent);
   background: var(--accent-soft);
   border: 1px solid rgb(194 73 28 / 20%);
-  border-radius: 999px;
+  border-radius: 12px;
   box-shadow: none;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
+}
+.sessions-new:hover:not(:disabled) {
+  color: #ffffff;
+  background: var(--accent);
+  border-color: transparent;
 }
 .session-list {
   min-height: 0;
