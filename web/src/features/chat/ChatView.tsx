@@ -364,14 +364,37 @@ export function ChatView({
             >
               <div className="composer-input-wrap">
                 <label className="composer-label" htmlFor="composer-message">MESSAGE</label>
-                <textarea
-                  id="composer-message"
-                  aria-label="消息内容"
-                  value={draft}
-                  onChange={(event) => onDraftChange(event.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="输入消息；Enter 发送，Shift + Enter 换行"
-                />
+                <div className="composer-textarea-wrap">
+                  <textarea
+                    id="composer-message"
+                    aria-label="消息内容"
+                    value={draft}
+                    onChange={(event) => onDraftChange(event.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="输入消息；Enter 发送，Shift + Enter 换行"
+                  />
+                  {running ? (
+                    <button
+                      className="composer-submit submit-stop"
+                      type="button"
+                      title="停止当前回复"
+                      aria-label="停止当前回复"
+                      onClick={() => abortRef.current?.abort()}
+                    >
+                      <Square aria-hidden="true" size={15} />
+                    </button>
+                  ) : (
+                    <button
+                      className={`composer-submit submit-send ${draft.trim() ? "is-ready" : ""}`}
+                      type="submit"
+                      disabled={!draft.trim()}
+                      title="发送消息（Enter）"
+                      aria-label="发送消息"
+                    >
+                      <ArrowUp aria-hidden="true" size={16} strokeWidth={2.4} />
+                    </button>
+                  )}
+                </div>
                 {selected.length > 0 && (
                   <div className="composer-attachments">
                     {selected.map((item) => (
@@ -441,28 +464,6 @@ export function ChatView({
                   <span className="composer-progress">
                     {composerProgressText(progress, nowMs)}
                   </span>
-                )}
-              </div>
-              <div className="composer-actions">
-                {running ? (
-                  <button
-                    className="composer-stop"
-                    type="button"
-                    title="停止当前回复"
-                    onClick={() => abortRef.current?.abort()}
-                  >
-                    <Square aria-hidden="true" size={16} />
-                    停止
-                  </button>
-                ) : (
-                  <button
-                    className={`composer-send ${draft.trim() ? "is-ready" : ""}`}
-                    type="submit"
-                    disabled={!draft.trim()}
-                  >
-                    <ArrowUp aria-hidden="true" size={17} strokeWidth={2.2} />
-                    发送
-                  </button>
                 )}
               </div>
             </form>
