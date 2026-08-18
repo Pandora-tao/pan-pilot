@@ -109,7 +109,6 @@ export function ChatView({
 }: ChatViewProps) {
   const [conversation, setConversation] = useState<ChatMessage[]>([SYSTEM_MESSAGE]);
   const [messages, setMessages] = useState<UiMessage[]>([]);
-  const [stream, setStream] = useState(true);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<UiProgress | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -193,29 +192,16 @@ export function ChatView({
     try {
       const response = await client.chat(
         nextConversation,
-        stream,
+        true,
         requestAttachments.map(({ mediaId, kind }) => ({ mediaId, kind })),
         selectedModelId,
         controller.signal,
       );
       if (!response.ok) throw new Error(await readError(response));
-      const result = stream
-        ? await consumeSse(response, (event) => handleStreamEvent(event, assistantId))
-        : normalizeNonStreaming(await response.json());
-      if (!stream) {
-        setProgress((current) => current === null ? current : {
-          ...current,
-          stage: "done",
-          finishedAtMs: Date.now(),
-          expanded: false,
-          tools: (result.toolExecutions ?? []).map((tool) => ({
-            id: tool.id ?? tool.name,
-            name: tool.name,
-            status: tool.status,
-            durationMs: tool.durationMs,
-          })),
-        });
-      }
+      const result = await consumeSse(
+        response,
+        (event) => handleStreamEvent(event, assistantId),
+      );
       finalizeAssistant(assistantId, result);
       onSaveSession(toSessionMessages(messagesRef.current));
       setConversation((current) => [
@@ -427,14 +413,6 @@ export function ChatView({
                           </option>
                         ))}
                       </select>
-                    </label>
-                    <label className="stream-toggle">
-                      <input
-                        type="checkbox"
-                        checked={stream}
-                        onChange={(event) => setStream(event.target.checked)}
-                      />
-                      流式输出
                     </label>
                     <button
                       className="composer-tool"
@@ -709,30 +687,6 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(seconds / 60);
   const rest = Math.round(seconds % 60);
   return `${minutes} 分 ${rest} 秒`;
-}
-
-function normalizeNonStreaming(data: {
-  message?: string;
-  modelId?: string;
-  model?: string;
-  reasoning?: string;
-  usage?: { totalTokens?: number };
-  execution?: {
-    toolExecutions?: ToolExecution[];
-    context?: ChatResult["context"];
-    contextMessages?: ChatMessage[];
-  };
-}): ChatResult {
-  return {
-    content: data.message ?? "",
-    modelId: data.modelId,
-    model: data.model ?? "",
-    ...(data.reasoning === undefined ? {} : { reasoning: data.reasoning }),
-    totalTokens: data.usage?.totalTokens,
-    toolExecutions: data.execution?.toolExecutions ?? [],
-    context: data.execution?.context,
-    contextMessages: data.execution?.contextMessages,
-  };
 }
 
 function resultMeta(result: ChatResult, catalog: ModelsResponse | null): string {

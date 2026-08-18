@@ -858,19 +858,6 @@ code {
   font-size: 11px;
 }
 .model-picker.compact select { max-width: min(240px, 38vw); min-height: 22px; }
-.stream-toggle {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  min-height: 26px;
-  padding: 2px 10px;
-  background: rgb(255 255 255 / 78%);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  cursor: pointer;
-  font-size: 11px;
-}
-.stream-toggle input { margin: 0; accent-color: var(--accent); }
 .composer-status { margin-left: auto; }
 .composer-progress {
   min-width: 0;
