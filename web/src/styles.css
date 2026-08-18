@@ -868,10 +868,9 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.composer-actions { display: flex; flex-direction: column; gap: 8px; }
+.composer-actions { display: flex; flex-direction: column; gap: 8px; justify-content: center; }
 .composer-stop {
-  flex: 1;
-  min-height: 44px;
+  min-height: 34px;
   padding: 0 16px;
   color: var(--danger);
   background: var(--danger-soft);
@@ -885,8 +884,7 @@ code {
   background: var(--danger);
 }
 .composer-send {
-  flex: 1;
-  min-height: 44px;
+  min-height: 34px;
   padding: 0 18px;
   color: var(--muted);
   background: var(--line-soft);
