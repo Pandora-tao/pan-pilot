@@ -425,7 +425,7 @@ code {
   gap: 0;
   margin-top: 0;
 }
-.conversation { display: grid; grid-template-rows: auto minmax(420px, 60vh) auto; min-width: 0; }
+.conversation { display: grid; grid-template-rows: auto minmax(420px, 60vh) auto; min-width: 0; border-radius: 0; }
 .chat-heading {
   display: flex;
   align-items: center;
@@ -779,8 +779,8 @@ code {
   padding: 12px 14px 14px;
   background: rgb(255 255 255 / 58%);
   border-top: 1px solid var(--line-soft);
-  border-bottom-left-radius: var(--radius);
-  border-bottom-right-radius: var(--radius);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
 }
@@ -1222,10 +1222,11 @@ code {
   body { overflow: hidden; }
   .app-shell { height: 100dvh; min-height: 0; overflow: hidden; }
   .workspace { height: 100dvh; overflow-y: auto; }
-  .workspace-chat { overflow: hidden; padding-bottom: 28px; }
+  .workspace-chat { overflow: hidden; padding-bottom: 28px; padding-right: 0; }
   .workspace-chat > .view {
     height: 100%;
     min-height: 0;
+    max-width: none;
     display: grid;
     grid-template-rows: minmax(0, 1fr);
   }

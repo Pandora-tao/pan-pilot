@@ -18,6 +18,8 @@ media/
 # Runtime scheduled-task state (PAN_PILOT_SCHEDULED_TASKS_DIR default).
 /scheduled-tasks/
 /sessions/
+# Runtime filesystem workspace (default root for fs_* tools), auto-created at startup.
+/workspace/
 # 运行时导出下载目录（/v1/artifacts 等附件下载），不提交
 /download/
 # 本地生成的 Office 示例文档，不提交

@@ -1,6 +1,8 @@
 import Fastify, { type FastifyBaseLogger } from "fastify";
 import multipart from "@fastify/multipart";
 import type { Transport } from "@modelcontextprotocol/client";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
 import { ConsoleAuth } from "./auth/console-auth.js";
 import { ArtifactStore } from "./artifacts/artifact-store.js";
 import {
@@ -65,6 +67,9 @@ import { createWebSearchTool } from "./tools/web-search.js";
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
+/** 未配置 PAN_PILOT_FS_ROOTS 时，内建 fs_* 工具默认使用的专用工作目录。 */
+const DEFAULT_FS_ROOT = "./workspace";
+
 /**
  * 本地控制台允许跨源调用 /v1/*：仅放行 file:// 页面（Origin: null）
  * 与 localhost/127.0.0.1 静态服务器，其他站点不返回 CORS 头，避免被任意网页借用。
@@ -112,6 +117,10 @@ export interface BuildAppOptions {
   scheduledTasksDir?: string;
   /** 会话历史持久目录，默认取 PAN_PILOT_SESSIONS_DIR。 */
   sessionsDir?: string;
+  /** 内建 fs_* 工具允许的根目录白名单；默认取 PAN_PILOT_FS_ROOTS，未配置时回退 ./workspace。 */
+  filesystemRoots?: string[];
+  /** 是否注册内建 fs_* 工具；默认开启，传入 false 可显式关闭。 */
+  filesystemEnabled?: boolean;
   /** 定时任务执行上限，生产默认 10 分钟；测试可缩短。 */
   scheduledTaskRunTimeoutMs?: number;
   /** 测试注入可控时钟。 */
@@ -186,11 +195,24 @@ export function buildApp(options: BuildAppOptions = {}) {
         options.mediaDir ?? process.env.PAN_PILOT_MEDIA_DIR ?? "./media",
         { maxBytes: mediaMaxBytes },
       );
-  // 文件系统工具默认 fail-closed：未配置 PAN_PILOT_FS_ENABLED=true 或不提供
-  // 允许根目录时不注册 fs_* 工具，模型根本看不到也就不可能调用。
-  const fsRoots = parseFsRoots(process.env.PAN_PILOT_FS_ROOTS);
-  const fsEnabled = isEnabled(process.env.PAN_PILOT_FS_ENABLED)
-    && fsRoots.length > 0;
+  // 文件系统工具默认启用：未显式关闭（filesystemEnabled=false 或
+  // PAN_PILOT_FS_ENABLED=false）即注册 fs_* 工具；根目录未配置时回退到
+  // 自动创建的 ./workspace 专用目录，保证打开即用。安全由根目录白名单 +
+  // 工具内沙箱共同兜底。
+  const fsEnabledConfig = options.filesystemEnabled
+    ?? (process.env.PAN_PILOT_FS_ENABLED === undefined
+      || isEnabled(process.env.PAN_PILOT_FS_ENABLED));
+  const configuredFsRoots = options.filesystemRoots
+    ?? parseFsRoots(process.env.PAN_PILOT_FS_ROOTS);
+  const fsUsingDefaultRoot = configuredFsRoots.length === 0;
+  const fsRoots = fsUsingDefaultRoot
+    ? [path.resolve(DEFAULT_FS_ROOT)]
+    : configuredFsRoots;
+  if (fsEnabledConfig && fsUsingDefaultRoot) {
+    // 默认专用目录首次启动即创建，Agent 打开即可读写。
+    mkdirSync(path.resolve(DEFAULT_FS_ROOT), { recursive: true });
+  }
+  const fsEnabled = fsEnabledConfig && fsRoots.length > 0;
   // 测试注入的客户端直接复用；否则懒加载厂商实现，未配置密钥时服务仍可启动。
   const injectedMultimodal = options.multimodalClient;
   const multimodalProvider: MultimodalClientProvider = injectedMultimodal
@@ -210,7 +232,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     createAnalyzeAudioTool(mediaStore, multimodalProvider),
     createTranscribeAudioTool(mediaStore, multimodalProvider),
     createReadAttachmentTool(mediaStore),
-    // 文件系统工具仅当开启且配置了允许根目录时注册（默认关闭）。
+    // 文件系统工具默认启用（可显式关闭）；根目录未配置时用自动创建的 ./workspace。
     ...(fsEnabled ? createFilesystemTools({ roots: fsRoots }) : []),
   ];
   const toolRegistry = new ToolRegistry();
