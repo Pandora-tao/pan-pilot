@@ -31,6 +31,12 @@ export interface PluginStatus {
   toolNames: string[];
   error?: string;
   loadedAt?: string;
+  /** manifest 描述，用于控制台展示插件用途；加载失败（无 manifest）时缺省。 */
+  description?: string;
+  /** 执行器类型：内置引用或 HTTP 请求。 */
+  executorType?: "builtin" | "http";
+  /** HTTP 型插件的完整目标 URL（不含 headers/密钥）；builtin 型缺省。 */
+  httpUrl?: string;
 }
 
 interface PluginEntry {
@@ -208,6 +214,11 @@ export class PluginManager {
       enabled: entry.enabled,
       toolNames: entry.enabled ? [entry.name] : [],
       loadedAt: entry.loadedAt,
+      description: entry.manifest.description,
+      executorType: entry.manifest.executor.type,
+      ...(entry.manifest.executor.type === "http"
+        ? { httpUrl: entry.manifest.executor.url }
+        : {}),
     }));
     for (const error of errors) {
       statuses.push({

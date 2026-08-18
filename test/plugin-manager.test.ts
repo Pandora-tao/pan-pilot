@@ -63,7 +63,13 @@ describe("PluginManager", () => {
 
     expect(registeredNames(registry)).toEqual(["alpha"]);
     expect(manager.listStatuses()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: "alpha", state: "loaded", enabled: true }),
+      expect.objectContaining({
+        name: "alpha",
+        state: "loaded",
+        enabled: true,
+        description: "alpha 测试工具",
+        executorType: "builtin",
+      }),
       expect.objectContaining({
         name: "brokenjson",
         state: "error",
@@ -169,6 +175,26 @@ describe("PluginManager", () => {
     expect(manager.listStatuses()[0]).toMatchObject({
       name: "echo",
       state: "loaded",
+    });
+  });
+
+  it("exposes executor metadata for installed plugins", () => {
+    fixtureRoot = createPluginFixture({
+      alpha: builtinManifest("alpha"),
+      ping: httpManifest("ping", "https://api.example.com/ping"),
+    });
+    const { registry, manager } = createManager();
+
+    expect(registeredNames(registry).sort()).toEqual(["alpha", "ping"]);
+    const statuses = manager.listStatuses();
+    expect(statuses.find((s) => s.name === "alpha")).toMatchObject({
+      description: "alpha 测试工具",
+      executorType: "builtin",
+    });
+    expect(statuses.find((s) => s.name === "ping")).toMatchObject({
+      description: "ping 测试工具",
+      executorType: "http",
+      httpUrl: "https://api.example.com/ping",
     });
   });
 });

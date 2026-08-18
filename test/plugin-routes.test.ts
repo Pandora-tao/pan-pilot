@@ -77,7 +77,12 @@ describe("/v1/plugins direct user management", () => {
     });
     const list = await app.inject({ method: "GET", url: "/v1/plugins", headers: AUTH });
     expect(list.json().plugins).toEqual([
-      expect.objectContaining({ name: "calc_alias", enabled: true }),
+      expect.objectContaining({
+        name: "calc_alias",
+        enabled: true,
+        description: "calc_alias 测试工具",
+        executorType: "builtin",
+      }),
     ]);
     await app.close();
   });

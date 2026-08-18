@@ -42,6 +42,12 @@ export interface PluginStatus {
   toolNames: string[];
   loadedAt?: string;
   error?: string;
+  /** manifest 描述，用于展示插件用途；加载失败时缺省。 */
+  description?: string;
+  /** 执行器类型：内置引用或 HTTP 请求。 */
+  executorType?: "builtin" | "http";
+  /** HTTP 型插件的完整目标 URL；builtin 型缺省。 */
+  httpUrl?: string;
 }
 
 export interface PluginInstallPreview {
