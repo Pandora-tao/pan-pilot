@@ -1,5 +1,4 @@
 import {
-  ChevronDown,
   Paperclip,
   Send,
   Square,
@@ -369,18 +368,6 @@ export function ChatView({
             ))}
           </div>
 
-          {progress && (
-            <ProgressPanel
-              progress={progress}
-              nowMs={nowMs}
-              running={running}
-              onStop={() => abortRef.current?.abort()}
-              onToggle={() => setProgress((current) => current === null
-                ? current
-                : { ...current, expanded: !current.expanded })}
-            />
-          )}
-
           <div className="composer">
             <form
               className="composer-form"
@@ -472,6 +459,11 @@ export function ChatView({
                     {selected.length ? `已添加 ${selected.length} 个附件` : "未添加附件"}
                   </span>
                 </div>
+                {progress !== null && progress.finishedAtMs === undefined && (
+                  <span className="composer-progress">
+                    {composerProgressText(progress, nowMs)}
+                  </span>
+                )}
               </div>
               <div className="composer-actions">
                 <button
@@ -576,87 +568,6 @@ function MessageRow({
         {message.error && <div className="message-error">{message.error}</div>}
       </div>
     </article>
-  );
-}
-
-/** 可折叠的「处理过程」区域：进行中展示阶段/工具/耗时/慢响应提示与停止按钮，完成后折叠为耗时摘要。 */
-function ProgressPanel({
-  progress,
-  nowMs,
-  running,
-  onStop,
-  onToggle,
-}: {
-  progress: UiProgress;
-  nowMs: number;
-  running: boolean;
-  onStop: () => void;
-  onToggle: () => void;
-}) {
-  const elapsedMs = Math.max(
-    0,
-    (progress.finishedAtMs ?? nowMs) - progress.startedAtMs,
-  );
-  const failedCount = progress.tools.filter((tool) => tool.status === "error").length;
-  const summary = [
-    stageLabel(progress.stage),
-    `用时 ${formatDuration(elapsedMs)}`,
-    progress.tools.length > 0
-      ? `${progress.tools.length} 个工具调用${failedCount > 0 ? `（${failedCount} 失败）` : ""}`
-      : "",
-  ].filter(Boolean).join(" · ");
-
-  return (
-    <div className={`progress-panel ${progress.stage}${progress.expanded ? " expanded" : ""}`}>
-      <div className="progress-summary-row">
-        <button
-          className="progress-toggle"
-          type="button"
-          aria-expanded={progress.expanded}
-          aria-label={progress.expanded ? "收起处理过程" : "展开处理过程"}
-          onClick={onToggle}
-        >
-          <ChevronDown aria-hidden="true" size={15} />
-        </button>
-        <span className="progress-summary">{summary}</span>
-        {running && (
-          <button className="composer-stop progress-stop" type="button" onClick={onStop}>
-            <Square aria-hidden="true" size={12} />
-            停止
-          </button>
-        )}
-      </div>
-      {progress.expanded && (
-        <div className="progress-details">
-          <div className="progress-stage-row">
-            <span className="progress-stage">{stageLabel(progress.stage)}</span>
-            {progress.step > 0 && <span className="progress-step">第 {progress.step} 轮</span>}
-            <span className="progress-elapsed">{formatDuration(elapsedMs)}</span>
-          </div>
-          {progress.warning && <div className="progress-warning">{progress.warning}</div>}
-          {progress.error && <div className="progress-error">{progress.error}</div>}
-          {progress.tools.length > 0 && (
-            <ul className="progress-tools">
-              {progress.tools.map((tool) => (
-                <li className={`progress-tool ${tool.status}`} key={tool.id}>
-                  <span className="progress-tool-name">{tool.name}</span>
-                  <span className="progress-tool-status">
-                    {tool.status === "running"
-                      ? "执行中…"
-                      : tool.status === "success"
-                      ? `成功 · ${formatDuration(tool.durationMs ?? 0)}`
-                      : "失败"}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {progress.tools.length === 0 && !progress.warning && !progress.error && (
-            <div className="progress-hint">正在等待模型响应…</div>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -777,6 +688,15 @@ function stageLabel(stage: UiProgress["stage"]): string {
     case "failed":
       return "处理失败";
   }
+}
+
+/** 输入框下方的进行中状态小文本；仅在请求尚未结束时渲染。 */
+function composerProgressText(progress: UiProgress, nowMs: number): string {
+  const elapsedMs = Math.max(
+    0,
+    (progress.finishedAtMs ?? nowMs) - progress.startedAtMs,
+  );
+  return `${stageLabel(progress.stage)}… · 用时 ${formatDuration(elapsedMs)}`;
 }
 
 function formatDuration(ms: number): string {
