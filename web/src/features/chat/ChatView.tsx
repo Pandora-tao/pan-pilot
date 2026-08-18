@@ -1,6 +1,6 @@
 import {
+  ArrowUp,
   Paperclip,
-  Send,
   Square,
   Trash2,
   X,
@@ -466,23 +466,26 @@ export function ChatView({
                 )}
               </div>
               <div className="composer-actions">
-                <button
-                  className="composer-stop"
-                  type="button"
-                  disabled={!running}
-                  onClick={() => abortRef.current?.abort()}
-                >
-                  <Square aria-hidden="true" size={14} />
-                  停止
-                </button>
-                <button
-                  className={`composer-send ${draft.trim() && !running ? "is-ready" : ""}`}
-                  type="submit"
-                  disabled={running || !draft.trim()}
-                >
-                  <Send aria-hidden="true" size={17} />
-                  发送
-                </button>
+                {running ? (
+                  <button
+                    className="composer-stop"
+                    type="button"
+                    title="停止当前回复"
+                    onClick={() => abortRef.current?.abort()}
+                  >
+                    <Square aria-hidden="true" size={16} />
+                    停止
+                  </button>
+                ) : (
+                  <button
+                    className={`composer-send ${draft.trim() ? "is-ready" : ""}`}
+                    type="submit"
+                    disabled={!draft.trim()}
+                  >
+                    <ArrowUp aria-hidden="true" size={17} strokeWidth={2.2} />
+                    发送
+                  </button>
+                )}
               </div>
             </form>
           </div>

@@ -883,7 +883,8 @@ code {
 }
 .composer-actions { display: flex; flex-direction: column; gap: 8px; }
 .composer-stop {
-  min-height: 38px;
+  flex: 1;
+  min-height: 44px;
   padding: 0 16px;
   color: var(--danger);
   background: var(--danger-soft);
@@ -891,6 +892,10 @@ code {
   border-radius: 999px;
   box-shadow: 0 8px 18px rgb(194 69 47 / 10%);
   font-weight: 700;
+}
+.composer-stop:hover:not(:disabled) {
+  color: #ffffff;
+  background: var(--danger);
 }
 .composer-send {
   flex: 1;
