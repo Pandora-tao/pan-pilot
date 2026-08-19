@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SearchClient } from "../src/search/search-client.js";
 import { ToolRegistry } from "../src/tools/tool-registry.js";
+import { defaultToolContext } from "../src/tools/tool.js";
 import { createWebSearchTool } from "../src/tools/web-search.js";
 
 describe("web_search tool", () => {
@@ -15,7 +16,7 @@ describe("web_search tool", () => {
     ]);
     const tool = createWebSearchTool({ search });
 
-    const result = await tool.execute({ query: "PanPilot" });
+    const result = await tool.execute({ query: "PanPilot" }, defaultToolContext());
 
     expect(result).toEqual({
       query: "PanPilot",
@@ -36,7 +37,7 @@ describe("web_search tool", () => {
     const search = vi.fn<SearchClient["search"]>().mockResolvedValue([]);
     const tool = createWebSearchTool({ search });
 
-    await tool.execute({ query: "q", maxResults: 3 });
+    await tool.execute({ query: "q", maxResults: 3 }, defaultToolContext());
 
     expect(search).toHaveBeenCalledWith("q", 3);
   });
@@ -59,7 +60,7 @@ describe("web_search tool", () => {
       search: vi.fn().mockRejectedValue(new Error("搜索服务返回 500")),
     });
 
-    await expect(tool.execute({ query: "q" }))
+    await expect(tool.execute({ query: "q" }, defaultToolContext()))
       .rejects.toThrow("搜索服务返回 500");
   });
 
@@ -69,7 +70,7 @@ describe("web_search tool", () => {
     const controller = new AbortController();
     controller.abort(new Error("用户取消"));
 
-    await expect(tool.execute({ query: "q" }, controller.signal))
+    await expect(tool.execute({ query: "q" }, defaultToolContext(controller.signal)))
       .rejects.toThrow("用户取消");
     expect(search).not.toHaveBeenCalled();
   });

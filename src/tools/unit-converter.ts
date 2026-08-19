@@ -74,8 +74,8 @@ export const unitConverterTool: AgentTool<
   description:
     "换算常用长度、重量、温度和容量单位；容量中的 cup、fl_oz、gal 使用美制。",
   inputSchema: unitConverterInputSchema,
-  async execute(input, signal) {
-    signal?.throwIfAborted();
+  async execute(input, ctx) {
+    ctx.signal?.throwIfAborted();
 
     let result: number;
     switch (input.category) {

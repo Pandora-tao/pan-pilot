@@ -6,7 +6,13 @@ import type {
   ModelStreamEvent,
 } from "../model/model-client.js";
 import { ToolRegistryError, type ToolRegistry } from "../tools/tool-registry.js";
-import type { AgentToolDefinition } from "../tools/tool.js";
+import {
+  type AgentToolDefinition,
+  type PermissionOutcome,
+  type ToolExecutionContext,
+  type ToolPermissionAsk,
+} from "../tools/tool.js";
+import type { PermissionService, PermissionRequestPublic } from "../permissions/permission-service.js";
 import {
   ContextManager,
   emptyContextUsage,
@@ -61,6 +67,7 @@ export type AgentStreamEvent =
   | { type: "content"; content: string }
   | { type: "status"; stage: "model" | "tool"; step: number }
   | { type: "tool_start"; id: string; name: string; step: number }
+  | { type: "permission_request"; request: PermissionRequestPublic }
   | { type: "tool_execution"; execution: AgentToolExecution }
   | { type: "done"; result: AgentRunResult };
 
@@ -74,6 +81,10 @@ export interface ChatAgentOptions {
   toolTimeoutMs?: number;
   /** 整个请求（全部模型/工具步骤）的总超时；默认 10 分钟。 */
   timeoutMs?: number;
+  /** 授权服务（buildApp 单例）；未注入时所有需要授权的工具 fail-closed。 */
+  permissionService?: PermissionService;
+  /** 待决授权请求创建时的通知（聊天 SSE 通过此回调把 permission_request 事件写给前端）。 */
+  emitPermissionRequest?: (request: PermissionRequestPublic) => void;
 }
 
 type AgentExecutionMode = "complete" | "stream";
@@ -327,6 +338,8 @@ export class ChatAgent {
   private readonly toolTimeoutMs: number;
   private readonly timeoutMs: number;
   private readonly contextManager: ContextManager;
+  private readonly permissionService: PermissionService | undefined;
+  private readonly emitPermissionRequest: ((request: PermissionRequestPublic) => void) | undefined;
 
   // 依赖接口而非 DeepSeekClient 或具体工具，便于切换实现，也便于测试注入假实现。
   constructor(
@@ -345,6 +358,8 @@ export class ChatAgent {
       options.timeoutMs, DEFAULT_REQUEST_TIMEOUT_MS, "timeoutMs",
     );
     this.contextManager = new ContextManager(modelClient, options.context);
+    this.permissionService = options.permissionService;
+    this.emitPermissionRequest = options.emitPermissionRequest;
   }
 
   async chat(
@@ -554,12 +569,35 @@ export class ChatAgent {
       const controller = new AbortController();
       const timeoutError = new AgentTimeoutError("tool", this.toolTimeoutMs);
       const callSignal = AbortSignal.any([deadline.signal, controller.signal]);
+
+      // 授权闭环：需要授权的操作（写入/编辑/补丁/删除/命令/敏感读取）
+      // 在工具内调用 ctx.ask → 转发到共享 PermissionService。
+      // 需确认时先通过 emitPermissionRequest 发 SSE 事件，再阻塞等待决定；
+      // 决定后同一工具调用继续执行（无副作用时恢复）。
+      const ask = async (permissionAsk: ToolPermissionAsk): Promise<PermissionOutcome> => {
+        if (this.permissionService === undefined) return "denied";
+        const gate = await this.permissionService.gate(
+          permissionAsk,
+          { origin: "chat", callId: toolCall.id },
+        );
+        if (gate.outcome !== undefined) return gate.outcome;
+        if (gate.request === undefined) return "denied";
+        this.emitPermissionRequest?.(gate.request);
+        return gate.wait(callSignal);
+      };
+      const toolCtx: ToolExecutionContext = {
+        signal: callSignal,
+        origin: "chat",
+        callId: toolCall.id,
+        ask,
+      };
+
       const startedAt = Date.now();
       let status: AgentToolExecution["status"];
       let toolMessage: string;
       try {
         const result = await raceOperation(
-          this.toolRegistry.execute(toolCall.name, toolCall.arguments, callSignal),
+          this.toolRegistry.execute(toolCall.name, toolCall.arguments, toolCtx),
           this.toolTimeoutMs,
           timeoutError,
           deadline,

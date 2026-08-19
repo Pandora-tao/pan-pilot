@@ -26,8 +26,8 @@ export function createWebSearchTool(
     description:
       "搜索互联网，返回网页标题、链接和内容摘要，用于获取实时信息或事实核查",
     inputSchema: webSearchInputSchema,
-    async execute(input, signal) {
-      signal?.throwIfAborted();
+    async execute(input, ctx) {
+      ctx.signal?.throwIfAborted();
       const maxResults = input.maxResults ?? 5;
       const results = await client.search(input.query, maxResults);
       return {

@@ -42,10 +42,10 @@ export function createCodeArtifactTool(
       + "优先保留核心可玩功能，不得输出半截源码。保存成功后只需向用户说明结果并给出"
       + " downloadUrl，不要重复整份源码。",
     inputSchema: createCodeArtifactInputSchema,
-    async execute(input, signal) {
-      signal?.throwIfAborted();
+    async execute(input, ctx) {
+      ctx.signal?.throwIfAborted();
       const artifact = await store.save(input);
-      signal?.throwIfAborted();
+      ctx.signal?.throwIfAborted();
       return {
         artifactId: artifact.id,
         name: artifact.name,

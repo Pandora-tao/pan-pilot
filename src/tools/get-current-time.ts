@@ -34,8 +34,8 @@ export function createGetCurrentTimeTool(
     name: "get_current_time",
     description: "获取指定 IANA 时区的当前日期和时间；未指定时区时使用 UTC。",
     inputSchema: getCurrentTimeInputSchema,
-    async execute(input, signal) {
-      signal?.throwIfAborted();
+    async execute(input, ctx) {
+      ctx.signal?.throwIfAborted();
 
       const now = clock.now();
       if (Number.isNaN(now.getTime())) {

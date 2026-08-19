@@ -32,7 +32,7 @@ export function createTranscribeAudioTool(
       "将用户上传的音频（mediaId 来自 /v1/media 上传结果）中的语音逐字转写为文本；"
       + "不能用于任意文件路径或远程 URL",
     inputSchema: transcribeAudioInputSchema,
-    execute(input, signal) {
+    execute(input, ctx) {
       const prompt = input.language === undefined
         ? DEFAULT_TRANSCRIBE_PROMPT
         : `请将这段音频中的语音逐字转写为 ${input.language} 文本；`
@@ -42,7 +42,7 @@ export function createTranscribeAudioTool(
         input,
         "audio",
         prompt,
-        signal,
+        ctx.signal,
       );
     },
   };

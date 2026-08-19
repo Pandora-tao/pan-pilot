@@ -111,6 +111,14 @@ export const scheduledTaskRunSchema = z.object({
   checkpoint: agentRunCheckpointSchema.optional(),
   activity: agentRunActivitySchema.optional(),
   recoveryReason: z.string().max(1000).optional(),
+  // 「工具授权」确认信息：区分于「异常恢复」（recoveryReason）。
+  // 授权决定到达后调度器续跑并从同一待执行工具继续。
+  confirmation: z.object({
+    type: z.literal("tool_permission"),
+    permissionRequestId: z.string(),
+    toolName: z.string().max(200),
+    target: z.string().max(4096),
+  }).strict().optional(),
 }).strict();
 
 export type ScheduledTaskRun = z.infer<typeof scheduledTaskRunSchema>;

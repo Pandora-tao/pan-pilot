@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { AgentTool } from "../src/tools/tool.js";
+import { defaultToolContext } from "../src/tools/tool.js";
 import { ToolRegistry } from "../src/tools/tool-registry.js";
 
 describe("ToolRegistry", () => {
@@ -89,8 +90,11 @@ describe("ToolRegistry", () => {
     const controller = new AbortController();
     controller.abort(new Error("停止执行"));
 
-    await expect(registry.execute("echo", { value: 7 }, controller.signal))
-      .rejects.toThrow("停止执行");
+    await expect(registry.execute(
+      "echo",
+      { value: 7 },
+      defaultToolContext(controller.signal),
+    )).rejects.toThrow("停止执行");
     expect(tool.execute).not.toHaveBeenCalled();
   });
 

@@ -19,6 +19,8 @@ export interface PluginManagerOptions {
   fetchImpl?: typeof fetch;
   /** 由其他动态协议贡献的工具（例如 MCP）；每次重建时原子合并。 */
   additionalTools?: () => readonly AnyAgentTool[];
+  /** 核心 HostRuntime 工具名（fs_*、terminal）：插件加载/安装不得遮蔽或卸载。 */
+  reservedNames?: ReadonlySet<string>;
 }
 
 export type PluginState = "loaded" | "error" | "disabled";
@@ -60,6 +62,7 @@ export class PluginManager {
   readonly pluginsDir: string;
   private readonly builtinTools: ReadonlyMap<string, AnyAgentTool>;
   private readonly builtinNames: ReadonlySet<string>;
+  private readonly reservedNames: ReadonlySet<string>;
   private readonly registry: ToolRegistry;
   private readonly httpOptions: HttpExecutorRuntimeOptions;
   private readonly additionalTools: () => readonly AnyAgentTool[];
@@ -71,6 +74,7 @@ export class PluginManager {
     this.pluginsDir = options.pluginsDir;
     this.registry = options.registry;
     this.additionalTools = options.additionalTools ?? (() => []);
+    this.reservedNames = options.reservedNames ?? EMPTY_NAMES;
     this.httpOptions = {
       ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
       ...(options.allowedHosts === undefined
@@ -164,13 +168,15 @@ export class PluginManager {
 
       // 插件名不能遮蔽内置工具：同名只允许标准的 builtin 自引用。
       if (
-        this.builtinNames.has(manifest.name)
+        (this.builtinNames.has(manifest.name) || this.reservedNames.has(manifest.name))
         && (manifest.executor.type !== "builtin"
           || manifest.executor.ref !== manifest.name)
       ) {
         errors.push({
           dirName: record.dirName,
-          message: `插件名 ${manifest.name} 与内置工具冲突`,
+          message: this.reservedNames.has(manifest.name)
+            ? `插件名 ${manifest.name} 与核心 HostRuntime 工具冲突（不可卸载/遮蔽）`
+            : `插件名 ${manifest.name} 与内置工具冲突`,
         });
         continue;
       }
@@ -237,3 +243,5 @@ export class PluginManager {
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+const EMPTY_NAMES: ReadonlySet<string> = new Set();

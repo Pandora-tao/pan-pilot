@@ -1,7 +1,7 @@
 import Fastify, { type FastifyBaseLogger } from "fastify";
 import multipart from "@fastify/multipart";
 import type { Transport } from "@modelcontextprotocol/client";
-import { mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { ConsoleAuth } from "./auth/console-auth.js";
 import { ArtifactStore } from "./artifacts/artifact-store.js";
@@ -35,6 +35,9 @@ import { registerConsoleAuthRoute } from "./routes/console-auth-route.js";
 import { registerHealthRoute } from "./routes/health-route.js";
 import { registerMediaRoute } from "./routes/media-route.js";
 import { registerModelsRoute } from "./routes/models-route.js";
+import { registerPermissionRoute } from "./routes/permission-route.js";
+import { PermissionService } from "./permissions/permission-service.js";
+import { PermissionStore } from "./permissions/permission-store.js";
 import { BingSearchClient } from "./search/bing-search.js";
 import { loadMcpConfig, type McpConfig } from "./mcp/mcp-config.js";
 import { McpManager } from "./mcp/mcp-manager.js";
@@ -60,6 +63,7 @@ import { createInstallPluginTool } from "./tools/install-plugin.js";
 import { createReadAttachmentTool } from "./tools/read-attachment.js";
 import { createSuggestPluginTool } from "./tools/suggest-plugin.js";
 import { textStatsTool } from "./tools/text-stats.js";
+import { createTerminalTool } from "./tools/terminal.js";
 import { ToolRegistry } from "./tools/tool-registry.js";
 import { createTranscribeAudioTool } from "./tools/transcribe-audio.js";
 import { unitConverterTool } from "./tools/unit-converter.js";
@@ -67,8 +71,8 @@ import { createWebSearchTool } from "./tools/web-search.js";
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
-/** 未配置 PAN_PILOT_FS_ROOTS 时，内建 fs_* 工具默认使用的专用工作目录。 */
-const DEFAULT_FS_ROOT = "./workspace";
+/** 相对路径的解析基准（PAN_PILOT_HOST_CWD，默认进程启动目录）。 */
+const DEFAULT_HOST_CWD = process.cwd();
 
 /**
  * 本地控制台允许跨源调用 /v1/*：仅放行 file:// 页面（Origin: null）
@@ -117,10 +121,24 @@ export interface BuildAppOptions {
   scheduledTasksDir?: string;
   /** 会话历史持久目录，默认取 PAN_PILOT_SESSIONS_DIR。 */
   sessionsDir?: string;
-  /** 内建 fs_* 工具允许的根目录白名单；默认取 PAN_PILOT_FS_ROOTS，未配置时回退 ./workspace。 */
+  /** 内建 fs_* 工具允许的根目录白名单（管理员级限制）；默认取 PAN_PILOT_FS_ROOTS，未配置时不限制（整机可访问）。 */
   filesystemRoots?: string[];
+  /** 相对路径解析基准；默认取 PAN_PILOT_HOST_CWD，未配置时用进程启动目录。 */
+  hostCwd?: string;
   /** 是否注册内建 fs_* 工具；默认开启，传入 false 可显式关闭。 */
   filesystemEnabled?: boolean;
+  /** 是否注册内建 terminal 工具；默认开启，传入 false 可显式关闭。 */
+  terminalEnabled?: boolean;
+  /** 授权数据目录；默认取 PAN_PILOT_PERMISSIONS_DIR。 */
+  permissionsDir?: string;
+  /** 待决授权请求过期时间（毫秒）；默认取 PAN_PILOT_PERMISSION_REQUEST_TIMEOUT_MS。 */
+  permissionRequestTimeoutMs?: number;
+  /** 追加的敏感路径 glob 规则；默认取 PAN_PILOT_SENSITIVE_PATHS/PAN_PILOT_SENSITIVE_PATHS_FILE。 */
+  extraSensitivePaths?: readonly string[];
+  /** 终端额外允许继承的环境变量名白名单；默认取 PAN_PILOT_TERMINAL_ENV_ALLOWLIST。 */
+  terminalEnvAllowlist?: string[];
+  /** 默认 agent 系统提示词正文；undefined=内置默认，空字符串=不注入，其余=完全覆盖。 */
+  systemPrompt?: string;
   /** 定时任务执行上限，生产默认 10 分钟；测试可缩短。 */
   scheduledTaskRunTimeoutMs?: number;
   /** 测试注入可控时钟。 */
@@ -184,6 +202,9 @@ export function buildApp(options: BuildAppOptions = {}) {
     );
   const slowWarningMs = options.slowWarningMs
     ?? positiveIntFromEnv(process.env, "PAN_PILOT_SLOW_WARNING_MS", DEFAULT_SLOW_WARNING_MS);
+  // 默认 agent 系统提示词：未配置时用内置默认，配成空字符串则完全不注入。
+  const systemPrompt = options.systemPrompt
+    ?? process.env.PAN_PILOT_SYSTEM_PROMPT;
   const artifactStore = new ArtifactStore(
     options.artifactsDir
       ?? process.env.PAN_PILOT_ARTIFACTS_DIR
@@ -195,24 +216,47 @@ export function buildApp(options: BuildAppOptions = {}) {
         options.mediaDir ?? process.env.PAN_PILOT_MEDIA_DIR ?? "./media",
         { maxBytes: mediaMaxBytes },
       );
-  // 文件系统工具默认启用：未显式关闭（filesystemEnabled=false 或
-  // PAN_PILOT_FS_ENABLED=false）即注册 fs_* 工具；根目录未配置时回退到
-  // 自动创建的 ./workspace 专用目录，保证打开即用。安全由根目录白名单 +
-  // 工具内沙箱共同兜底。
+  // ---- HostRuntime 核心能力：文件系统 + 终端（不可被插件卸载/遮蔽）。 ----
+  const hostCwd = path.resolve(
+    options.hostCwd ?? process.env.PAN_PILOT_HOST_CWD ?? DEFAULT_HOST_CWD,
+  );
   const fsEnabledConfig = options.filesystemEnabled
     ?? (process.env.PAN_PILOT_FS_ENABLED === undefined
       || isEnabled(process.env.PAN_PILOT_FS_ENABLED));
-  const configuredFsRoots = options.filesystemRoots
+  const terminalEnabledConfig = options.terminalEnabled
+    ?? (process.env.PAN_PILOT_TERMINAL_ENABLED === undefined
+      || isEnabled(process.env.PAN_PILOT_TERMINAL_ENABLED));
+  // 旧 PAN_PILOT_FS_ROOTS 保留为管理员级限制；未配置时不限制（整机可访问，
+  // 受服务账号 OS 权限约束）。
+  const adminRoots = options.filesystemRoots
     ?? parseFsRoots(process.env.PAN_PILOT_FS_ROOTS);
-  const fsUsingDefaultRoot = configuredFsRoots.length === 0;
-  const fsRoots = fsUsingDefaultRoot
-    ? [path.resolve(DEFAULT_FS_ROOT)]
-    : configuredFsRoots;
-  if (fsEnabledConfig && fsUsingDefaultRoot) {
-    // 默认专用目录首次启动即创建，Agent 打开即可读写。
-    mkdirSync(path.resolve(DEFAULT_FS_ROOT), { recursive: true });
-  }
-  const fsEnabled = fsEnabledConfig && fsRoots.length > 0;
+  const fsEnabled = fsEnabledConfig;
+  const terminalEnvAllowlist = options.terminalEnvAllowlist
+    ?? parseNameList(process.env.PAN_PILOT_TERMINAL_ENV_ALLOWLIST);
+
+  // ---- 授权服务（全局单例，聊天与定时任务共享）。 ----
+  const permissionStore = new PermissionStore(
+    options.permissionsDir
+      ?? process.env.PAN_PILOT_PERMISSIONS_DIR
+      ?? "./permissions",
+  );
+  const schedulerRef: { current: ScheduledTaskScheduler | undefined } = {
+    current: undefined,
+  };
+  const permissionService = new PermissionService({
+    store: permissionStore,
+    requestTimeoutMs: options.permissionRequestTimeoutMs
+      ?? positiveIntFromEnv(
+        process.env, "PAN_PILOT_PERMISSION_REQUEST_TIMEOUT_MS", 120_000,
+      ),
+    extraSensitivePatterns: loadExtraSensitivePaths(process.env),
+    onRequestDecided: (request) => {
+      // 定时任务授权的运行在决定后自动续跑（从同一待执行工具继续）。
+      if (request.runId === undefined || schedulerRef.current === undefined) return;
+      void schedulerRef.current.continueAfterPermission(request.runId).catch(() => {});
+    },
+  });
+
   // 测试注入的客户端直接复用；否则懒加载厂商实现，未配置密钥时服务仍可启动。
   const injectedMultimodal = options.multimodalClient;
   const multimodalProvider: MultimodalClientProvider = injectedMultimodal
@@ -220,6 +264,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     ? () => new VolcengineMultimodalClient()
     : () => injectedMultimodal;
   // 内置实现是插件框架的引用来源；白名单由 plugins/ 下的 manifest 声明。
+  // 文件系统与终端归入核心注册表（见下方 registerCore），不在此引用。
   const builtinTools = [
     calculatorTool,
     getCurrentTimeTool,
@@ -232,10 +277,24 @@ export function buildApp(options: BuildAppOptions = {}) {
     createAnalyzeAudioTool(mediaStore, multimodalProvider),
     createTranscribeAudioTool(mediaStore, multimodalProvider),
     createReadAttachmentTool(mediaStore),
-    // 文件系统工具默认启用（可显式关闭）；根目录未配置时用自动创建的 ./workspace。
-    ...(fsEnabled ? createFilesystemTools({ roots: fsRoots }) : []),
   ];
   const toolRegistry = new ToolRegistry();
+  // 核心 HostRuntime 工具直接注册到核心注册表（starts 不经过插件/声明式 manifest）。
+  const coreHostRuntimeTools = [
+    ...(fsEnabled
+      ? createFilesystemTools({
+          hostCwd,
+          adminRoots,
+          skipSensitive: (absPath) => permissionService.isSensitivePath(absPath),
+        })
+      : []),
+    ...(terminalEnabledConfig
+      ? [createTerminalTool({ defaultCwd: hostCwd, extraEnv: terminalEnvAllowlist })]
+      : []),
+  ];
+  for (const tool of coreHostRuntimeTools) toolRegistry.registerCore(tool);
+  // 核心 HostRuntime 工具名：插件加载/安装必须拒绝遮蔽。
+  const reservedNames = toolRegistry.coreNames();
   if (options.mcpConfig !== undefined && options.mcpConfigPath !== undefined) {
     throw new Error("mcpConfig and mcpConfigPath cannot both be provided");
   }
@@ -305,12 +364,15 @@ export function buildApp(options: BuildAppOptions = {}) {
       ? {}
       : { fetchImpl: options.pluginFetchImpl }),
     additionalTools: () => mcpRef.current?.listTools() ?? [],
+    // 核心 HostRuntime 工具名不可被插件遮蔽/卸载。
+    reservedNames,
   });
   const pluginService = new PluginService({
     manager: pluginManager,
     builtinTools: allBuiltinTools,
     allowedHosts,
     allowedEnvVars,
+    reservedNames,
   });
   managerRef.current = pluginManager;
   serviceRef.current = pluginService;
@@ -345,7 +407,9 @@ export function buildApp(options: BuildAppOptions = {}) {
       ? {} : { runTimeoutMs: options.scheduledTaskRunTimeoutMs }),
     ...(options.scheduledTaskNow === undefined
       ? {} : { now: options.scheduledTaskNow }),
+    permissionService,
   });
+  schedulerRef.current = scheduledTaskScheduler;
   for (const status of pluginManager.loadInitial()) {
     if (status.state === "error") {
       app.log.warn(
@@ -402,7 +466,9 @@ export function buildApp(options: BuildAppOptions = {}) {
   registerCapabilitiesRoute(app, {
     pluginAutoInstall,
     filesystemEnabled: fsEnabled,
-    filesystemRoots: fsRoots,
+    filesystemRoots: adminRoots,
+    terminalEnabled: terminalEnabledConfig,
+    hostCwd,
   });
   registerModelsRoute(app, modelRegistry);
   registerChatRoute(app, modelRegistry, toolRegistry, {
@@ -416,7 +482,10 @@ export function buildApp(options: BuildAppOptions = {}) {
     },
     heartbeatIntervalMs,
     slowWarningMs,
+    ...(systemPrompt === undefined ? {} : { systemPrompt }),
+    permissionService,
   });
+  registerPermissionRoute(app, permissionService);
   registerPluginRoutes(app, pluginManager, pluginService);
   registerArtifactRoute(app, artifactStore);
   registerScheduledTaskRoutes(app, scheduledTaskScheduler);
@@ -465,6 +534,32 @@ function parseNameList(value: string | undefined): string[] {
 /** 文件系统允许根目录白名单；路径可为相对路径（按工作目录解析为绝对路径）。 */
 function parseFsRoots(value: string | undefined): string[] {
   return parseNameList(value);
+}
+
+/**
+ * 追加敏感路径规则：PAN_PILOT_SENSITIVE_PATHS（逗号分隔 glob）
+ * + PAN_PILOT_SENSITIVE_PATHS_FILE（JSON 字符串数组）。
+ */
+function loadExtraSensitivePaths(
+  env: Readonly<Record<string, string | undefined>>,
+): readonly string[] {
+  const patterns = parseNameList(env.PAN_PILOT_SENSITIVE_PATHS);
+  const filePath = env.PAN_PILOT_SENSITIVE_PATHS_FILE;
+  if (filePath !== undefined && filePath.trim() !== "") {
+    try {
+      const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (typeof item === "string" && item.trim() !== "") {
+            patterns.push(item.trim());
+          }
+        }
+      }
+    } catch {
+      // 敏感路径扩展文件损坏只忽略，不阻止启动。
+    }
+  }
+  return patterns;
 }
 
 function contextOptionsFromEnv(

@@ -1,7 +1,7 @@
 export type ViewName = "chat" | "settings";
 
-/** 设置页内的页签：连接 / 插件 / 任务 / 能力。 */
-export type SettingsTab = "connection" | "plugins" | "tasks" | "capabilities";
+/** 设置页内的页签：连接 / 插件 / 任务 / 权限 / 能力。 */
+export type SettingsTab = "connection" | "plugins" | "tasks" | "permissions" | "capabilities";
 
 export interface ConsoleSettings {
   baseUrl: string;
@@ -114,6 +114,13 @@ export interface ScheduledTaskRun {
   steps?: number;
   toolExecutions?: ToolExecution[];
   recoveryReason?: string;
+  /** 「工具授权」确认信息（区别于「异常恢复」recoveryReason）。 */
+  confirmation?: {
+    type: "tool_permission";
+    permissionRequestId: string;
+    toolName: string;
+    target: string;
+  };
   context?: ContextUsage;
 }
 
@@ -222,6 +229,38 @@ export interface ChatWarningEvent {
   elapsedMs?: number;
 }
 
+/** 工具需要用户授权的待决请求（路径 / 命令 / diff 预览）。 */
+export interface PermissionRequest {
+  id: string;
+  toolName: string;
+  op: string;
+  target: string;
+  summary: string;
+  diff?: string;
+  permanentlyAllowable: boolean;
+  origin: string;
+  callId?: string;
+  runId?: string;
+  createdAt: string;
+  expiresAt: string;
+  status: "pending" | "allowed_once" | "allowed_always" | "rejected" | "expired";
+}
+
+export type PermissionDecisionAction = "allow_once" | "allow_always" | "reject";
+
+export interface PermissionRule {
+  id: string;
+  createdAt: string;
+  kind: "file" | "command";
+  pattern: string;
+  operations: string[];
+}
+
+export interface ChatPermissionRequestEvent {
+  type: "permission_request";
+  request: PermissionRequest;
+}
+
 export interface ChatDoneEvent {
   type: "done";
   result: ChatResult;
@@ -242,6 +281,7 @@ export type ChatStreamEvent =
   | ChatContentEvent
   | ChatHeartbeatEvent
   | ChatWarningEvent
+  | ChatPermissionRequestEvent
   | ChatDoneEvent
   | ChatErrorEvent;
 

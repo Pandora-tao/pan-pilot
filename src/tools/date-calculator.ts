@@ -65,8 +65,8 @@ export const dateCalculatorTool: AgentTool<
   description:
     "进行日期加减、计算两个日期相差天数或查询星期；日期使用 YYYY-MM-DD，不处理具体时刻。",
   inputSchema: dateCalculatorInputSchema,
-  async execute(input, signal) {
-    signal?.throwIfAborted();
+  async execute(input, ctx) {
+    ctx.signal?.throwIfAborted();
 
     switch (input.operation) {
       case "add_days": {

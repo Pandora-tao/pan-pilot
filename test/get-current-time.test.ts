@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { createGetCurrentTimeTool } from "../src/tools/get-current-time.js";
+import { defaultToolContext } from "../src/tools/tool.js";
 
 describe("get_current_time", () => {
   const fixedTime = new Date("2026-08-02T07:30:00.000Z");
   const tool = createGetCurrentTimeTool({ now: () => fixedTime });
 
   it("returns the injected time in the requested time zone", async () => {
-    const result = await tool.execute({ timeZone: "Asia/Shanghai" });
+    const result = await tool.execute(
+      { timeZone: "Asia/Shanghai" },
+      defaultToolContext(),
+    );
 
     expect(result).toEqual({
       isoTime: "2026-08-02T07:30:00.000Z",
@@ -17,7 +21,7 @@ describe("get_current_time", () => {
   });
 
   it("uses UTC by default", async () => {
-    const result = await tool.execute({});
+    const result = await tool.execute({}, defaultToolContext());
 
     expect(result.timeZone).toBe("UTC");
     expect(result.localTime).toContain("07:30");
@@ -33,7 +37,7 @@ describe("get_current_time", () => {
     const controller = new AbortController();
     controller.abort(new Error("停止读取时间"));
 
-    await expect(tool.execute({}, controller.signal))
+    await expect(tool.execute({}, defaultToolContext(controller.signal)))
       .rejects.toThrow("停止读取时间");
   });
 });

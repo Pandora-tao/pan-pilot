@@ -30,8 +30,8 @@ export const textStatsTool: AgentTool<TextStatsInput, TextStatsOutput> = {
   description:
     "按可见字素统计文本的字符数、非空白字符数、词数、句数、行数和 UTF-8 字节数。",
   inputSchema: textStatsInputSchema,
-  async execute(input, signal) {
-    signal?.throwIfAborted();
+  async execute(input, ctx) {
+    ctx.signal?.throwIfAborted();
 
     const characters = [...characterSegmenter.segment(input.text)];
     const charactersWithoutWhitespace = characters

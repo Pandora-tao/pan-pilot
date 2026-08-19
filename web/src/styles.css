@@ -1312,3 +1312,51 @@ code {
 @media (prefers-reduced-motion: reduce) {
   .cursor { animation: none; }
 }
+
+/* --- 工具授权弹窗与权限页签 --- */
+.permission-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  color: var(--text);
+  font-size: 14px;
+}
+.permission-target {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2, rgba(0, 0, 0, 0.04));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+.permission-diff {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--code-bg, rgba(0, 0, 0, 0.06));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+.permission-note {
+  margin: 8px 0 0;
+  color: var(--text-dim, rgba(0, 0, 0, 0.5));
+  font-size: 12px;
+}
+.permission-item .record-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.permission-diff-details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--accent, #2563eb);
+}

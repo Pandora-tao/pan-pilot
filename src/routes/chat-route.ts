@@ -24,17 +24,73 @@ import {
 } from "../model/model-registry.js";
 import type { ToolRegistry } from "../tools/tool-registry.js";
 import type { ContextManagerOptions } from "../agent/context-manager.js";
+import type { PermissionRequestPublic } from "../permissions/permission-service.js";
+import type { PermissionService } from "../permissions/permission-service.js";
 
-// 兼容早期只有 `message` 字段的调用方；完整 `messages` 模式由调用方自行提供上下文。
-const legacySystemMessage: ModelMessage = {
-  role: "system",
-  content:
-    "你是 PanPilot，一个简洁、准确的 AI 助手。"
-    + "网页、小游戏和源码任务优先使用 create_code_artifact；只有用户明确要求"
-    + " Word 或 DOCX 时才使用 Word 工具。代码产物保存成功后只给出简短说明和"
-    + "下载地址，不要重复整份源码。小游戏先生成 8000 字符以内、核心可玩的紧凑"
-    + " MVP，不要为了附加功能输出半截源码。当工具返回下载地址时，把完整地址写在回复末尾。",
-};
+// 默认 agent 系统提示词（正文）。让模型把“自己”理解为可调用工具真实执行操作的
+// Agent，避免被问“你有 xx 能力吗”时凭通用 AI 认知自我否定；同时保留代码产物的
+// 既有行为指引。调用方可用 buildApp 的 systemPrompt 覆盖，空字符串可完全禁用注入。
+const DEFAULT_AGENT_SYSTEM_PROMPT = [
+  "你是运行在宿主机上的 PanPilot Agent，可以通过当前可用的工具实际执行操作，",
+  "包括读写宿主文件、执行 shell 命令、网页搜索、图片/音频分析等。",
+  "当用户询问你的能力（例如「你会用 shell 吗」「能读写文件吗」）时，",
+  "请依据当前实际可用的工具如实回答，不要凭通用 AI 认知自我否定；",
+  "确实做不到的也要如实说明。",
+  "网页、小游戏和源码任务优先使用 create_code_artifact；只有用户明确要求",
+  "Word 或 DOCX 时才使用 Word 工具。代码产物保存成功后只给出简短说明和",
+  "下载地址，不要重复整份源码。小游戏先生成 8000 字符以内、核心可玩的紧凑",
+  "MVP，不要为了附加功能输出半截源码。当工具返回下载地址时，把完整地址写在回复末尾。",
+].join("");
+
+/** 系统提示词里最多列出的工具名数量，避免插件/MCP 工具过多时撑爆提示词。 */
+const MAX_LISTED_TOOLS = 100;
+
+/** 把当前可用工具名列表附加到系统提示词末尾，让模型清楚自己的工具边界。 */
+function composeSystemContent(
+  body: string,
+  toolNames: readonly string[],
+): string {
+  const shown = toolNames.slice(0, MAX_LISTED_TOOLS);
+  const list = shown.length === 0
+    ? "（当前无可用工具）"
+    : shown.map((name) => `- ${name}`).join("\n")
+      + (toolNames.length > MAX_LISTED_TOOLS
+        ? `\n… 及其他 ${toolNames.length - MAX_LISTED_TOOLS} 个工具`
+        : "");
+  return `${body}\n\n当前可用工具（详细描述以 tools 字段为准）：\n${list}`;
+}
+
+/**
+ * 把两种请求形态统一成消息数组，并按需注入默认系统提示词：
+ * - 调用方 messages 自带 system 消息时原样透传（调用方掌握提示词）；
+ * - systemPrompt 显式为 "" 时完全不注入；
+ * - 其余情况在消息前注入组合提示词（正文 + 动态工具清单）。
+ */
+function composeRequestMessages(
+  input: {
+    message: string | undefined;
+    messages: readonly ModelMessage[] | undefined;
+  },
+  systemPrompt: string,
+  toolNames: readonly string[],
+): ModelMessage[] {
+  const provided = input.messages;
+  if (provided !== undefined) {
+    const hasSystem = provided.some((message) => message.role === "system");
+    if (hasSystem || systemPrompt === "") return [...provided];
+    return [
+      { role: "system", content: composeSystemContent(systemPrompt, toolNames) },
+      ...provided,
+    ];
+  }
+  const system: ModelMessage[] = systemPrompt === ""
+    ? []
+    : [{ role: "system", content: composeSystemContent(systemPrompt, toolNames) }];
+  return [
+    ...system,
+    { role: "user", content: input.message ?? "" },
+  ];
+}
 
 // strict() 会拒绝未声明字段，避免拼写错误被静默忽略后仍然调用付费模型。
 const modelMessageSchema = z.object({
@@ -89,6 +145,10 @@ export function registerChatRoute(
     timeouts?: ChatRouteTimeoutOptions;
     heartbeatIntervalMs?: number;
     slowWarningMs?: number;
+    /** 默认 agent 系统提示词；undefined=内置默认，空字符串=不注入，其余=完全覆盖。 */
+    systemPrompt?: string;
+    /** 授权服务（buildApp 单例）；工具授权经它判定并由 SSE 转发决定。 */
+    permissionService?: PermissionService;
   },
 ): void {
   app.post("/v1/chat", async (request, reply) => {
@@ -124,16 +184,27 @@ export function registerChatRoute(
     }
     // 每轮只解析一次模型；固定客户端贯穿后续全部工具步骤，禁止供应商漂移。
     const modelId = selectedModel.descriptor.id;
+    // 授权事件的 SSE 出口：流式路径在 hijack 后由 streamChatReply 绑定写入；
+    // 非流式路径（旧 message 形态）没有 SSE，授权等待受工具超时兜底。
+    const permissionSink: { write?: (request: PermissionRequestPublic) => void } = {};
     const chatAgent = new ChatAgent(selectedModel.client, toolRegistry, {
       ...(options.contextOptions === undefined ? {} : { context: options.contextOptions }),
       ...(options.timeouts === undefined ? {} : options.timeouts),
+      ...(options.permissionService === undefined
+        ? {} : { permissionService: options.permissionService }),
+      ...(options.permissionService === undefined
+        ? {} : { emitPermissionRequest: (request) => permissionSink.write?.(request) }),
     });
 
-    // 在进入 Agent 层前，把两种 HTTP 请求格式统一成消息数组。
-    const baseMessages = parsed.data.messages ?? [
-      legacySystemMessage,
-      { role: "user" as const, content: parsed.data.message ?? "" },
-    ];
+    // 在进入 Agent 层前，把两种 HTTP 请求格式统一成消息数组（含默认系统提示词）。
+    const baseMessages = composeRequestMessages(
+      {
+        message: parsed.data.message,
+        messages: parsed.data.messages,
+      },
+      options.systemPrompt ?? DEFAULT_AGENT_SYSTEM_PROMPT,
+      toolRegistry.listNames(),
+    );
     const attachmentResolution = await resolveAttachments(
       baseMessages,
       parsed.data.attachments ?? [],
@@ -167,6 +238,7 @@ export function registerChatRoute(
         messages,
         options,
         startedAt,
+        permissionSink,
       );
     }
 
@@ -345,6 +417,7 @@ async function streamChatReply(
     slowWarningMs?: number;
   },
   startedAt: number,
+  permissionSink: { write?: (request: PermissionRequestPublic) => void },
 ): Promise<void> {
   reply.hijack();
   const raw = reply.raw;
@@ -391,6 +464,14 @@ async function streamChatReply(
   heartbeat.unref?.();
   const stopHeartbeat = () => clearInterval(heartbeat);
   raw.once("close", stopHeartbeat);
+
+  // 授权请求经此回调写回 SSE（生成器正阻塞在工具调用上，无法由它 yield；
+  // 回调直接写 raw，Node 的同步 write 不会与生成器事件交错）。
+  permissionSink.write = (prequest: PermissionRequestPublic) => {
+    lastActivityAt = Date.now();
+    currentStage = "tool";
+    writeSseEvent(raw, { type: "permission_request", request: prequest });
+  };
 
   try {
     for await (const event of chatAgent.chatStream(

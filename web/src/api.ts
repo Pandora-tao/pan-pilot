@@ -5,13 +5,16 @@ import type {
   ChatSessionMessage,
   MediaAsset,
   ModelsResponse,
+  PermissionDecisionAction,
+  PermissionRequest,
+  PermissionRule,
   PluginStatus,
   PluginSuggestion,
-  SessionSummary,
   ScheduledTask,
   ScheduledTaskInput,
   ScheduledTaskRun,
   ScheduledTasksResponse,
+  SessionSummary,
 } from "./types";
 
 export class ApiError extends Error {
@@ -148,6 +151,35 @@ export class ApiClient {
   async sessions(): Promise<SessionSummary[]> {
     const data = await this.json<{ sessions: SessionSummary[] }>("/v1/sessions");
     return data.sessions ?? [];
+  }
+
+  async permissionRequests(): Promise<PermissionRequest[]> {
+    const data = await this.json<{ requests: PermissionRequest[] }>(
+      "/v1/permission/requests",
+    );
+    return data.requests ?? [];
+  }
+
+  decidePermissionRequest(
+    id: string,
+    action: PermissionDecisionAction,
+  ): Promise<{ request: PermissionRequest }> {
+    return this.json(
+      `/v1/permission/requests/${encodeURIComponent(id)}/decision`,
+      jsonBody("POST", { action }),
+    );
+  }
+
+  async permissionRules(): Promise<PermissionRule[]> {
+    const data = await this.json<{ rules: PermissionRule[] }>("/v1/permission/rules");
+    return data.rules ?? [];
+  }
+
+  revokePermissionRule(id: string): Promise<unknown> {
+    return this.request(`/v1/permission/rules/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .then(async (response) => {
+        if (!response.ok) throw new ApiError(await readError(response), response.status);
+      });
   }
 
   createSession(): Promise<{ session: ChatSession }> {

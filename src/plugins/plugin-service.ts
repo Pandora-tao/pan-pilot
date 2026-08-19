@@ -51,6 +51,8 @@ export interface PluginServiceOptions {
   builtinTools: readonly AnyAgentTool[];
   allowedHosts?: readonly string[];
   allowedEnvVars?: readonly string[];
+  /** 核心 HostRuntime 工具名：安装不得遮蔽/卸载。 */
+  reservedNames?: ReadonlySet<string>;
 }
 
 export type PluginApplyResult = { applied: boolean; plugins: PluginStatus[] };
@@ -63,6 +65,7 @@ export class PluginService {
   private readonly manager: PluginManager;
   private readonly builtinTools: ReadonlyMap<string, AnyAgentTool>;
   private readonly builtinNames: ReadonlySet<string>;
+  private readonly reservedNames: ReadonlySet<string>;
   private readonly httpOptions: HttpExecutorRuntimeOptions;
   private readonly suggestions = new Map<string, StoredPluginSuggestion>();
 
@@ -80,6 +83,7 @@ export class PluginService {
     for (const tool of options.builtinTools) builtins.set(tool.name, tool);
     this.builtinTools = builtins;
     this.builtinNames = new Set(builtins.keys());
+    this.reservedNames = options.reservedNames ?? EMPTY_NAMES;
   }
 
   suggest(rawManifest: unknown): PluginSuggestion {
@@ -205,6 +209,12 @@ export class PluginService {
         `插件名 ${manifest.name} 与内置工具冲突`,
       );
     }
+    if (this.reservedNames.has(manifest.name)) {
+      throw new PluginOperationError(
+        "PLUGIN_CONFLICT",
+        `插件名 ${manifest.name} 与核心 HostRuntime 工具冲突（不可遮蔽/卸载）`,
+      );
+    }
     if (
       pluginExistsOnDisk(this.manager.pluginsDir, manifest.name)
       || this.manager.getStatus(manifest.name) !== undefined
@@ -312,6 +322,8 @@ function buildPreview(manifest: PluginManifest): PluginInstallPreview {
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+const EMPTY_NAMES: ReadonlySet<string> = new Set();
 
 function hashManifest(manifest: PluginManifest): string {
   return createHash("sha256").update(canonicalJson(manifest)).digest("hex");

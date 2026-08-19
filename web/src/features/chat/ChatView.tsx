@@ -26,10 +26,12 @@ import type {
   ChatStreamEvent,
   MediaAsset,
   ModelsResponse,
+  PermissionRequest,
   ToolExecution,
 } from "../../types";
 import { FileLink } from "./FileLink";
 import { MarkdownContent } from "./markdown";
+import { PermissionModal } from "./PermissionModal";
 import { SseEventParser } from "./sse-events";
 
 const SYSTEM_MESSAGE: ChatMessage = {
@@ -114,6 +116,7 @@ export function ChatView({
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<UiProgress | null>(null);
+  const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const abortRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<UiMessage[]>([]);
@@ -152,6 +155,7 @@ export function ChatView({
     ]);
     setRunning(false);
     setProgress(null);
+    setPendingPermission(null);
   }, [sessionKey]);
 
   async function sendMessage() {
@@ -279,6 +283,10 @@ export function ChatView({
           name: event.name,
           status: "running",
         }, event.step));
+        break;
+      case "permission_request":
+        // 工具需要授权：弹出授权弹窗，决定提交后服务端在同一调用处恢复。
+        setPendingPermission(event.request);
         break;
       case "tool_execution":
         updateMessages((current) => current.map((message) => (
@@ -476,6 +484,14 @@ export function ChatView({
           </div>
         </div>
       </div>
+      {pendingPermission !== null && (
+        <PermissionModal
+          request={pendingPermission}
+          client={client}
+          toast={toast}
+          onDecided={() => setPendingPermission(null)}
+        />
+      )}
     </section>
   );
 }

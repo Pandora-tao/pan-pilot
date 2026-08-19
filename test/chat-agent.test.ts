@@ -84,7 +84,11 @@ describe("ChatAgent", () => {
       "status",
       "durationMs",
     ]);
-    expect(tool.execute).toHaveBeenCalledWith({ value: 7 }, expect.any(AbortSignal));
+    // 第二个参数为 ToolExecutionContext（含 signal），不再直接传 AbortSignal。
+    const callArgs = tool.execute.mock.calls[0] as unknown[];
+    expect(callArgs[0]).toEqual({ value: 7 });
+    expect(callArgs[1]).toMatchObject({ origin: "chat", callId: "call_1" });
+    expect((callArgs[1] as { signal?: unknown }).signal).toBeInstanceOf(AbortSignal);
     expect(client.complete).toHaveBeenCalledTimes(2);
     expect(client.complete.mock.calls[1]![0].messages).toContainEqual({
       role: "assistant",

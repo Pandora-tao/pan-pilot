@@ -18,8 +18,8 @@ export const calculatorTool: AgentTool<CalculatorInput, CalculatorOutput> = {
   name: "calculator",
   description: "对两个有限数字执行加、减、乘、除运算。",
   inputSchema: calculatorInputSchema,
-  async execute(input, signal) {
-    signal?.throwIfAborted();
+  async execute(input, ctx) {
+    ctx.signal?.throwIfAborted();
 
     let result: number;
     switch (input.operation) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { dateCalculatorTool } from "../src/tools/date-calculator.js";
+import { defaultToolContext } from "../src/tools/tool.js";
 
 describe("date_calculator", () => {
   it("adds calendar days across leap day", async () => {
@@ -7,7 +8,7 @@ describe("date_calculator", () => {
       operation: "add_days",
       date: "2024-02-28",
       days: 2,
-    })).resolves.toEqual({
+    }, defaultToolContext())).resolves.toEqual({
       operation: "add_days",
       date: "2024-02-28",
       days: 2,
@@ -20,14 +21,14 @@ describe("date_calculator", () => {
       operation: "days_between",
       startDate: "2026-08-13",
       endDate: "2026-08-01",
-    })).resolves.toMatchObject({ days: -12 });
+    }, defaultToolContext())).resolves.toMatchObject({ days: -12 });
   });
 
   it("returns the weekday", async () => {
     await expect(dateCalculatorTool.execute({
       operation: "day_of_week",
       date: "2026-08-13",
-    })).resolves.toEqual({
+    }, defaultToolContext())).resolves.toEqual({
       operation: "day_of_week",
       date: "2026-08-13",
       dayOfWeek: 4,
@@ -61,6 +62,6 @@ describe("date_calculator", () => {
       operation: "add_days",
       date: "9999-12-31",
       days: 1,
-    })).rejects.toThrow("计算结果超出");
+    }, defaultToolContext())).rejects.toThrow("计算结果超出");
   });
 });

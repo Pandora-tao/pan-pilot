@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculatorTool } from "../src/tools/calculator.js";
+import { defaultToolContext } from "../src/tools/tool.js";
 
 describe("calculator", () => {
   it.each([
@@ -8,7 +9,7 @@ describe("calculator", () => {
     ["multiply", 8, 2, 16],
     ["divide", 8, 2, 4],
   ] as const)("executes %s", async (operation, left, right, expected) => {
-    await expect(calculatorTool.execute({ operation, left, right }))
+    await expect(calculatorTool.execute({ operation, left, right }, defaultToolContext()))
       .resolves.toEqual({ operation, left, right, result: expected });
   });
 
@@ -17,7 +18,7 @@ describe("calculator", () => {
       operation: "divide",
       left: 8,
       right: 0,
-    })).rejects.toThrow("除数不能为 0");
+    }, defaultToolContext())).rejects.toThrow("除数不能为 0");
   });
 
   it("rejects unsupported operations, non-finite numbers and extra fields", () => {
@@ -44,6 +45,6 @@ describe("calculator", () => {
       operation: "multiply",
       left: Number.MAX_VALUE,
       right: 2,
-    })).rejects.toThrow("计算结果不是有限数值");
+    }, defaultToolContext())).rejects.toThrow("计算结果不是有限数值");
   });
 });

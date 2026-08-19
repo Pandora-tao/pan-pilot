@@ -1,4 +1,4 @@
-import { CalendarPlus, ChevronDown, ChevronUp, Pause, Pencil, Play, Power, RefreshCw, RotateCcw, Square, Trash2 } from "lucide-react";
+import { CalendarPlus, ChevronDown, ChevronUp, Pause, Pencil, Play, Power, RefreshCw, RotateCcw, Square, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiClient } from "../../api";
 import { Modal } from "../../components/Modal";
@@ -215,6 +215,49 @@ function RunControls({
     );
   }
   if (run.status === "needs_confirmation") {
+    // 「工具授权」确认：让用户直接决定对应待决授权请求，批准/拒绝后任务自动续跑。
+    if (run.confirmation?.type === "tool_permission") {
+      return (
+        <div className="item-actions task-actions">
+          <button
+            className="small primary"
+            type="button"
+            disabled={busy}
+            onClick={() => void action(
+              `permit-${run.id}`,
+              () => client.decidePermissionRequest(run.confirmation!.permissionRequestId, "allow_once"),
+              "已授权，任务正在恢复执行",
+            )}
+          >
+            <Play aria-hidden="true" size={14} />允许
+          </button>
+          <button
+            className="small"
+            type="button"
+            disabled={busy}
+            onClick={() => void action(
+              `deny-${run.id}`,
+              () => client.decidePermissionRequest(run.confirmation!.permissionRequestId, "reject"),
+              "已拒绝该操作，任务继续处理拒绝结果",
+            )}
+          >
+            <X aria-hidden="true" size={14} />拒绝
+          </button>
+          <button
+            className="small danger"
+            type="button"
+            disabled={busy}
+            onClick={() => void action(
+              `terminate-${run.id}`,
+              () => client.resolveScheduledTaskRunRecovery(run.id, "terminate"),
+              "任务已终止",
+            )}
+          >
+            <Square aria-hidden="true" size={14} />终止
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="item-actions task-actions">
         <button className="small danger" type="button" disabled={busy} title="可能重复执行中断时的工具" onClick={() => void action(`retry-${run.id}`, () => client.resolveScheduledTaskRunRecovery(run.id, "retry"), "任务已从上一个安全检查点重试") }>

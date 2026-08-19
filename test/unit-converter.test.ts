@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { unitConverterTool } from "../src/tools/unit-converter.js";
+import { defaultToolContext } from "../src/tools/tool.js";
 
 describe("unit_converter", () => {
   it.each([
@@ -8,7 +9,7 @@ describe("unit_converter", () => {
     [{ category: "volume", value: 1, from: "gal", to: "l" }, 3.785411784],
     [{ category: "temperature", value: 32, from: "fahrenheit", to: "celsius" }, 0],
   ] as const)("converts common units", async (input, expected) => {
-    const result = await unitConverterTool.execute(input);
+    const result = await unitConverterTool.execute(input, defaultToolContext());
     expect(result.result).toBeCloseTo(expected, 9);
   });
 
@@ -18,7 +19,7 @@ describe("unit_converter", () => {
       value: 100,
       from: "celsius",
       to: "kelvin",
-    });
+    }, defaultToolContext());
     expect(result.result).toBeCloseTo(373.15, 10);
   });
 
@@ -44,6 +45,6 @@ describe("unit_converter", () => {
       value: -274,
       from: "celsius",
       to: "kelvin",
-    })).rejects.toThrow("温度不能低于绝对零度");
+    }, defaultToolContext())).rejects.toThrow("温度不能低于绝对零度");
   });
 });

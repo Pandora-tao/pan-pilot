@@ -40,8 +40,8 @@ export function createReadAttachmentTool(
       "读取已上传文本附件；二进制文件只返回名称与大小。"
       + "Office 文档必须使用对应的 Office MCP 工具，图片/音频请改用分析工具",
     inputSchema: readAttachmentInputSchema,
-    async execute(input, signal) {
-      signal?.throwIfAborted();
+    async execute(input, ctx) {
+      ctx.signal?.throwIfAborted();
       const media = await store.read(input.mediaId);
       if (media === undefined) {
         throw new Error(`附件 ${input.mediaId} 不存在`);

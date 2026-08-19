@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MediaStore } from "../src/media/media-store.js";
 import type { MultimodalClient } from "../src/model/multimodal-client.js";
+import { defaultToolContext } from "../src/tools/tool.js";
 import { createAnalyzeAudioTool } from "../src/tools/analyze-audio.js";
 import { createAnalyzeImageTool } from "../src/tools/analyze-image.js";
 import type { MultimodalClientProvider } from "../src/tools/media-common.js";
@@ -40,7 +41,7 @@ describe("multimodal tools", () => {
     });
     const tool = createAnalyzeImageTool(mediaStore, providerOf(analyze));
 
-    const result = await tool.execute({ mediaId: imageId, prompt: "有什么？" });
+    const result = await tool.execute({ mediaId: imageId, prompt: "有什么？" }, defaultToolContext());
 
     expect(result).toEqual({
       mediaId: imageId,
@@ -66,7 +67,7 @@ describe("multimodal tools", () => {
     });
     const tool = createAnalyzeImageTool(mediaStore, providerOf(analyze));
 
-    await tool.execute({ mediaId: imageId });
+    await tool.execute({ mediaId: imageId }, defaultToolContext());
 
     expect(analyze.mock.calls[0]![0].prompt).toContain("描述这张图片");
   });
@@ -78,7 +79,7 @@ describe("multimodal tools", () => {
     });
     const tool = createTranscribeAudioTool(mediaStore, providerOf(analyze));
 
-    const result = await tool.execute({ mediaId: audioId });
+    const result = await tool.execute({ mediaId: audioId }, defaultToolContext());
 
     expect(result).toMatchObject({
       mediaId: audioId,
@@ -99,7 +100,7 @@ describe("multimodal tools", () => {
     });
     const tool = createTranscribeAudioTool(mediaStore, providerOf(analyze));
 
-    await tool.execute({ mediaId: audioId, language: "zh" });
+    await tool.execute({ mediaId: audioId, language: "zh" }, defaultToolContext());
 
     expect(analyze.mock.calls[0]![0].prompt).toContain("zh 文本");
   });
@@ -108,7 +109,7 @@ describe("multimodal tools", () => {
     const analyze = vi.fn<MultimodalClient["analyze"]>();
     const tool = createAnalyzeImageTool(mediaStore, providerOf(analyze));
 
-    await expect(tool.execute({ mediaId: "does-not-exist" }))
+    await expect(tool.execute({ mediaId: "does-not-exist" }, defaultToolContext()))
       .rejects.toThrow("媒体 does-not-exist 不存在");
     expect(analyze).not.toHaveBeenCalled();
   });
@@ -117,9 +118,9 @@ describe("multimodal tools", () => {
     const imageTool = createAnalyzeImageTool(mediaStore, providerOf(vi.fn()));
     const audioTool = createAnalyzeAudioTool(mediaStore, providerOf(vi.fn()));
 
-    await expect(imageTool.execute({ mediaId: audioId }))
+    await expect(imageTool.execute({ mediaId: audioId }, defaultToolContext()))
       .rejects.toThrow("不是图片");
-    await expect(audioTool.execute({ mediaId: imageId }))
+    await expect(audioTool.execute({ mediaId: imageId }, defaultToolContext()))
       .rejects.toThrow("不是音频");
   });
 
@@ -128,7 +129,7 @@ describe("multimodal tools", () => {
       .mockRejectedValue(new Error("provider 挂了"));
     const tool = createAnalyzeImageTool(mediaStore, providerOf(analyze));
 
-    await expect(tool.execute({ mediaId: imageId }))
+    await expect(tool.execute({ mediaId: imageId }, defaultToolContext()))
       .rejects.toThrow("provider 挂了");
   });
 
@@ -138,7 +139,7 @@ describe("multimodal tools", () => {
     const controller = new AbortController();
     controller.abort(new Error("用户取消"));
 
-    await expect(tool.execute({ mediaId: audioId }, controller.signal))
+    await expect(tool.execute({ mediaId: audioId }, defaultToolContext(controller.signal)))
       .rejects.toThrow("用户取消");
     expect(analyze).not.toHaveBeenCalled();
   });
@@ -151,7 +152,7 @@ describe("multimodal tools", () => {
     const tool = createAnalyzeImageTool(mediaStore, providerOf(analyze));
     const controller = new AbortController();
 
-    await tool.execute({ mediaId: imageId }, controller.signal);
+    await tool.execute({ mediaId: imageId }, defaultToolContext(controller.signal));
 
     expect(analyze).toHaveBeenCalledWith(expect.objectContaining({
       signal: controller.signal,

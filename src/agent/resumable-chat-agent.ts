@@ -11,6 +11,16 @@ import {
   type AgentToolExecution,
 } from "./chat-agent.js";
 import {
+  PermissionPendingError,
+  type PermissionOutcome,
+  type ToolExecutionContext,
+  type ToolPermissionAsk,
+} from "../tools/tool.js";
+import type {
+  PermissionRequestPublic,
+  PermissionService,
+} from "../permissions/permission-service.js";
+import {
   ContextManager,
   emptyContextUsage,
   type ContextManagerOptions,
@@ -79,7 +89,8 @@ export type AgentRunActivity = z.infer<typeof agentRunActivitySchema>;
 
 export type ResumableAgentOutcome =
   | { type: "completed"; result: AgentRunResult }
-  | { type: "paused"; checkpoint: AgentRunCheckpoint };
+  | { type: "paused"; checkpoint: AgentRunCheckpoint }
+  | { type: "permission_wait"; checkpoint: AgentRunCheckpoint };
 
 export interface ResumableChatAgentOptions {
   maxSteps?: number;
@@ -87,6 +98,12 @@ export interface ResumableChatAgentOptions {
   onActivity?: (activity: AgentRunActivity) => void | Promise<void>;
   onCheckpoint?: (checkpoint: AgentRunCheckpoint) => void | Promise<void>;
   context?: ContextManagerOptions;
+  /** 授权服务（buildApp 单例）；未注入时所有需要授权的工具 fail-closed。 */
+  permissionService?: PermissionService;
+  /** 定时任务运行 ID：作为授权请求的 scope，决定后据此续跑。 */
+  runId?: string;
+  /** 定时任务在授权点挂起：记录待决请求后由调度器进入 needs_confirmation。 */
+  onPermissionWait?: (request: PermissionRequestPublic) => void | Promise<void>;
 }
 
 /**
@@ -128,7 +145,17 @@ export class ResumableChatAgent {
       if (await this.pauseRequested()) return paused(state);
 
       if (state.nextToolCallIndex < state.pendingToolCalls.length) {
-        await this.executePendingTool(state, signal);
+        try {
+          await this.executePendingTool(state, signal);
+        } catch (error) {
+          // 定时任务在授权点挂起：工具尚未执行，保存检查点后进入
+          // needs_confirmation；决定后从同一待执行工具恢复，不重复副作用。
+          if (error instanceof PermissionPendingError) {
+            await this.persistCheckpoint(state);
+            return { type: "permission_wait", checkpoint: structuredClone(state) };
+          }
+          throw error;
+        }
         await this.persistCheckpoint(state);
         if (await this.pauseRequested()) return paused(state);
         continue;
@@ -207,6 +234,32 @@ export class ResumableChatAgent {
       toolName: toolCall.name,
     });
 
+    // 授权闭环：需要授权的操作在工具内调用 ctx.ask。定时任务在需要确认时
+    // 先登记待决请求、通知调度器进入 needs_confirmation，然后抛
+    // PermissionPendingError 挂起本回合（工具未执行，无副作用）；
+    // 决定（允许/拒绝）写入授权记忆后重跑同一工具，直接命中结果。
+    const ask = async (permissionAsk: ToolPermissionAsk): Promise<PermissionOutcome> => {
+      if (this.options.permissionService === undefined) return "denied";
+      const gate = await this.options.permissionService.gate(
+        permissionAsk,
+        {
+          origin: "scheduled_task",
+          ...(this.options.runId === undefined
+            ? {} : { runId: this.options.runId }),
+        },
+      );
+      if (gate.outcome !== undefined) return gate.outcome;
+      if (gate.request === undefined) return "denied";
+      await this.options.onPermissionWait?.(gate.request);
+      throw new PermissionPendingError();
+    };
+    const ctx: ToolExecutionContext = {
+      ...(signal === undefined ? {} : { signal }),
+      origin: "scheduled_task",
+      ...(this.options.runId === undefined ? {} : { runId: this.options.runId }),
+      ask,
+    };
+
     let status: AgentToolExecution["status"];
     let content: string;
     const startedAt = Date.now();
@@ -214,13 +267,16 @@ export class ResumableChatAgent {
       const result = await this.toolRegistry.execute(
         toolCall.name,
         toolCall.arguments,
-        signal,
+        ctx,
       );
       status = "success";
       content = typeof result === "string"
         ? result
         : JSON.stringify(result) ?? String(result);
     } catch (error) {
+      // 授权挂起是控制流，不能当作工具失败写进历史；
+      // 统一归一为 PermissionPendingError 向上传播（run() 据此保存检查点并挂起）。
+      if (isPermissionPending(error)) throw new PermissionPendingError();
       signal?.throwIfAborted();
       status = "error";
       content = toolErrorMessage(error);
@@ -275,4 +331,17 @@ function toolErrorMessage(error: unknown): string {
     return cause === undefined ? error.message : `${error.message}：${cause}`;
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+/** 在错误及其 cause 链上查找 PermissionPendingError（注册表会把它包进 cause）。 */
+function isPermissionPending(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  const walk = (value: unknown): boolean => {
+    if (value === null || value === undefined || seen.has(value)) return false;
+    seen.add(value);
+    if (value instanceof PermissionPendingError) return true;
+    if (value instanceof Error) return walk(value.cause);
+    return false;
+  };
+  return walk(error);
 }

@@ -46,6 +46,7 @@ export function App() {
   const [plugins, setPlugins] = useState<PluginStatus[]>([]);
   const [pluginSuggestions, setPluginSuggestions] = useState<PluginSuggestion[]>([]);
   const [taskCount, setTaskCount] = useState(0);
+  const [permissionCount, setPermissionCount] = useState(0);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [sessionKey, setSessionKey] = useState(0);
@@ -344,6 +345,7 @@ export function App() {
   const counts = {
     plugins: plugins.length,
     tasks: taskCount,
+    permissions: permissionCount,
     capabilities: Object.keys(capabilities?.capabilities ?? {}).length,
   };
 
@@ -406,6 +408,7 @@ export function App() {
                 ]).then(() => undefined)}
                 modelCatalog={modelCatalog}
                 onTaskCountChange={setTaskCount}
+                onPermissionCountChange={setPermissionCount}
                 capabilities={capabilities}
                 refreshCapabilities={refreshCapabilities}
                 toast={toast}
@@ -543,6 +546,7 @@ function isSettingsTab(value: unknown): value is SettingsTab {
   return value === "connection"
     || value === "plugins"
     || value === "tasks"
+    || value === "permissions"
     || value === "capabilities";
 }
 

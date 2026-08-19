@@ -11,6 +11,7 @@ import {
 } from "../model/model-registry.js";
 import type { ToolRegistry } from "../tools/tool-registry.js";
 import type { ContextManagerOptions } from "../agent/context-manager.js";
+import type { PermissionRequestPublic, PermissionService } from "../permissions/permission-service.js";
 import { nextRunAt, serverTimeZone, TaskScheduleError, validateSchedule } from "./schedule-time.js";
 import { ScheduledTaskError } from "./scheduled-task-error.js";
 import {
@@ -42,6 +43,8 @@ export interface ScheduledTaskSchedulerOptions {
   now?: () => Date;
   runTimeoutMs?: number;
   contextOptions?: ContextManagerOptions;
+  /** 授权服务（buildApp 单例）；定时任务的工具授权确认共享同一策略。 */
+  permissionService?: PermissionService;
 }
 
 export class ScheduledTaskScheduler {
@@ -433,8 +436,10 @@ export class ScheduledTaskScheduler {
         {
           maxSteps: 10,
           ...(this.options.contextOptions === undefined
-            ? {}
-            : { context: this.options.contextOptions }),
+            ? {} : { context: this.options.contextOptions }),
+          ...(this.options.permissionService === undefined
+            ? {} : { permissionService: this.options.permissionService, runId }),
+          onPermissionWait: (request) => this.markPermissionWait(runId, request),
           shouldPause: () => this.options.store.getRun(runId)?.status === "pausing",
           onActivity: (activity) => this.saveActivity(runId, activity),
           onCheckpoint: (checkpoint) => this.saveCheckpoint(runId, checkpoint),
@@ -444,6 +449,10 @@ export class ScheduledTaskScheduler {
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: run.task.prompt },
       ], run.checkpoint, controller.signal);
+      if (outcome.type === "permission_wait") {
+        // 已进入 needs_confirmation（markPermissionWait 已写库）；等待授权决定。
+        return;
+      }
       if (outcome.type === "paused") {
         await this.markPaused(runId, outcome.checkpoint);
         return;
@@ -496,6 +505,51 @@ export class ScheduledTaskScheduler {
         delete run.activity;
       }
     });
+  }
+
+  private async markPermissionWait(
+    runId: string,
+    request: PermissionRequestPublic,
+  ): Promise<void> {
+    const timestamp = this.now().toISOString();
+    await this.options.store.mutate((draft) => {
+      const run = draft.runs.find((candidate) => candidate.id === runId);
+      if (run === undefined || run.status === "needs_confirmation") return;
+      if (!["running", "pausing"].includes(run.status)) return;
+      run.status = "needs_confirmation";
+      run.finishedAt = timestamp;
+      run.confirmation = {
+        type: "tool_permission",
+        permissionRequestId: request.id,
+        toolName: request.toolName,
+        target: request.target,
+      };
+      delete run.activity;
+    });
+  }
+
+  /**
+   * 授权决定已写入授权记忆后，从 needs_confirmation(工具授权) 续跑：
+   * 恢复为 queued 并从同一待执行工具继续（不重复有副作用的工具）。
+   */
+  async continueAfterPermission(runId: string): Promise<void> {
+    const timestamp = this.now().toISOString();
+    let resumed = false;
+    await this.options.store.mutate((draft) => {
+      const run = draft.runs.find((candidate) => candidate.id === runId);
+      if (run === undefined) return;
+      if (run.status !== "needs_confirmation") return;
+      if (run.confirmation?.type !== "tool_permission") return;
+      run.status = "queued";
+      run.resumedAt = timestamp;
+      delete run.confirmation;
+      delete run.error;
+      delete run.finishedAt;
+      resumed = true;
+    });
+    if (!resumed) return;
+    this.executionQueue.push(runId);
+    this.startProcessor();
   }
 
   private async markPaused(

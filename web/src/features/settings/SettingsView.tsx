@@ -1,10 +1,11 @@
-import { Activity, ArrowLeft, Clock3, Link2, Plug } from "lucide-react";
+import { Activity, ArrowLeft, Clock3, Link2, Plug, Shield } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ApiClient } from "../../api";
 import { ViewHeader } from "../../components/ViewHeader";
 import { CapabilitiesView } from "../capabilities/CapabilitiesView";
 import { PluginsView } from "../plugins/PluginsView";
 import { TasksView } from "../tasks/TasksView";
+import { PermissionsView } from "./PermissionsView";
 import type {
   CapabilitiesResponse,
   ConsoleSettings,
@@ -22,6 +23,7 @@ const tabs: Array<{
   { id: "connection", label: "连接", icon: Link2 },
   { id: "plugins", label: "插件", icon: Plug },
   { id: "tasks", label: "任务", icon: Clock3 },
+  { id: "permissions", label: "权限", icon: Shield },
   { id: "capabilities", label: "能力", icon: Activity },
 ];
 
@@ -47,6 +49,8 @@ interface SettingsViewProps {
   /** 任务页签 */
   modelCatalog: ModelsResponse | null;
   onTaskCountChange: (count: number) => void;
+  /** 权限页签 */
+  onPermissionCountChange?: (count: number) => void;
   /** 能力页签 */
   capabilities: CapabilitiesResponse | null;
   refreshCapabilities: () => Promise<void>;
@@ -72,6 +76,7 @@ export function SettingsView({
   refreshPlugins,
   modelCatalog,
   onTaskCountChange,
+  onPermissionCountChange,
   capabilities,
   refreshCapabilities,
   toast,
@@ -134,6 +139,13 @@ export function SettingsView({
             modelCatalog={modelCatalog}
             toast={toast}
             onCountChange={onTaskCountChange}
+          />
+        )}
+        {activeTab === "permissions" && (
+          <PermissionsView
+            client={client}
+            toast={toast}
+            onCountChange={onPermissionCountChange}
           />
         )}
         {activeTab === "capabilities" && (

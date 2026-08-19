@@ -198,6 +198,20 @@ HTTP 接口会剥离 `checkpoint` 与 `activity`，只返回安全摘要。
 - `PAN_PILOT_PLUGIN_ALLOWED_ENV_VARS`：允许插件通过 `${env:NAME}` 引用的
   环境变量名白名单（逗号分隔）；默认拒绝全部引用，禁止访问任意 `process.env`。
 - `PAN_PILOT_MEDIA_DIR`：受控媒体存储目录，默认 `./media`。
+- `PAN_PILOT_HOST_CWD`：文件系统与终端相对路径的解析基准；默认进程启动目录。
+  绝对路径允许访问整台主机（受服务账号 OS 权限限制）。
+- `PAN_PILOT_FS_ENABLED=false` / `PAN_PILOT_TERMINAL_ENABLED=false`：整体关闭
+  HostRuntime 的文件系统或终端核心工具。
+- `PAN_PILOT_FS_ROOTS`：旧的管理员级限制（逗号分隔路径）；配置后 fs_* 工具只
+  在这些根目录内操作（realpath 守卫、符号链接不可绕过）。未配置时不限制。
+- `PAN_PILOT_TERMINAL_ENV_ALLOWLIST`：终端子进程额外允许继承的环境变量名白名单。
+  PanPilot 的 API / 模型 / 通行证密钥一律不传入子进程。
+- `PAN_PILOT_PERMISSIONS_DIR`：授权数据目录（永久规则 + 定时任务待决请求），
+  默认 `./permissions`。
+- `PAN_PILOT_PERMISSION_REQUEST_TIMEOUT_MS`：待决授权请求过期时间，默认
+  `120000`。
+- `PAN_PILOT_SENSITIVE_PATHS` / `PAN_PILOT_SENSITIVE_PATHS_FILE`：追加敏感路径
+  glob 规则（内建覆盖 SSH/GPG/云凭据/浏览器凭据/系统密钥库/`.env`/私钥）。
 - `PAN_PILOT_SCHEDULED_TASKS_DIR`：定时任务与运行历史目录，默认
   `./scheduled-tasks`；生产应配置为 release 外持久目录。
 - `PAN_PILOT_MCP_CONFIG`：可选 MCP Client 配置文件路径；未配置时不连接任何
@@ -314,12 +328,46 @@ journalctl -u pan-pilot-test --since "30 minutes ago" -o cat \
 `maxSteps` 控制最大轮次（默认 10），`AbortSignal` 支持取消。对外能力声明中的
 `tools` 已标记为 `available`，`POST /v1/chat` 会执行工具，但 HTTP 响应（含流式
 事件）只返回执行摘要（`id`、`name`、`status`），不回传原始参数和工具结果——
-未来工具的参数与返回可能包含敏感数据。
+工具的参数与返回可能包含敏感数据。
 
-工具白名单由 `plugins/` 目录下的 manifest 声明式驱动（内置工具均已迁移），
-加工具不再改核心代码：新增纯 HTTP-JSON 工具只需要放一个 manifest 并重载。
-`list_plugins` 与 `suggest_plugin` 两个管理工具也以 manifest 形式对 Agent
-可见（builtin 自引用）。详见 `plugins/README.md`；操作接口：
+### HostRuntime：文件系统与终端（核心能力）
+
+`fs_*` 与 `terminal` 是本机文件能力的**核心 HostRuntime 工具**，由核心注册表
+直接注册（`registerCore`），插件启停、重载、安装都不能移除或遮蔽它们：
+`plugins/` 不再以 manifest 形式声明这些工具，控制台插件页也不再显示它们。
+
+- `fs_list` / `fs_info` / `fs_read` / `fs_read_base64` / `fs_write` / `fs_delete`
+  保持原工具名与基本语义；
+- 新增 `fs_edit`（精确编辑）、`fs_apply_patch`（结构化补丁：新增/修改/移动/
+  删除）、`fs_glob`（递归路径匹配，最多 100 项并标记截断）、`fs_grep`（正则
+  逐行搜索，跳过二进制与敏感路径，最多 100 项并标记截断）；
+- `fs_read` 按行分页（`offset`/`limit`，默认上限 2000 行 / 50KB），
+  `hasMore` 表示还有内容；二进制内容拒绝并提示改用 `fs_read_base64`；
+- 写入/编辑/补丁保留 BOM、换行风格与文件权限；使用文件锁 + 变更前内容校验 +
+  临时文件原子替换，避免并发覆盖。
+
+安全模型（不是沙箱，是授权层 + OS 边界）：
+
+- 相对路径统一基于 `PAN_PILOT_HOST_CWD`（默认进程启动目录）；绝对路径允许
+  访问整台主机，但始终受 PanPilot 服务账号的 OS 权限限制；
+- 旧的 `PAN_PILOT_FS_ROOTS` 保留为管理员级限制根目录（realpath 守卫，
+  符号链接不可绕过）；`PAN_PILOT_TERMINAL_ENV_ALLOWLIST` 控制终端子进程
+  额外继承的环境变量——PanPilot 的 API/模型/通行证密钥一律不传入子进程；
+- 普通读取（`list/info/read/glob/grep`）自动允许；写入/编辑/补丁按规范化路径
+  询问并可「始终允许」；删除、破坏性命令及敏感路径（`realpath` 判定，覆盖
+  SSH/GPG/云凭据/浏览器凭据/系统密钥库/`.env`/私钥）每次询问且不可永久放行；
+  终端只自动执行严格只读白名单中的简单命令；
+- `/v1/chat` 流式事件新增 `permission_request`：前端展示路径/命令与统一 diff
+  预览，用户经 `POST /v1/permission/requests/:id/decision` 提交决定后，原
+  Agent 在**同一工具调用处**恢复执行；拒绝则把授权错误作为工具结果反馈模型。
+  授权接口还有列出待决请求、列出/撤销永久规则。定时任务在授权点先保存检查点并
+  进入 `needs_confirmation`（区分「工具授权」与「异常恢复」），批准后从同一
+  待执行工具继续，不重复副作用。
+
+其余工具（计算、日期、换算、文本、搜索、媒体分析等）由 `plugins/` 目录下的
+manifest 声明式驱动：加工具不再改核心代码——新增纯 HTTP-JSON 工具只需放一个
+manifest 并重载。`list_plugins` 与 `suggest_plugin` 两个管理工具也以 manifest
+形式对 Agent 可见（builtin 自引用）。详见 `plugins/README.md`；操作接口：
 
 ```bash
 curl -H "Authorization: Bearer $PAN_PILOT_API_TOKEN" \

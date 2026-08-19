@@ -46,6 +46,17 @@ export const agentCapabilities = {
       // 运行时状态由 capabilities 路由按实际注册结果覆盖为 available/reserved。
       status: "reserved",
     },
+    terminal: {
+      // 内建 terminal 工具由 PAN_PILOT_TERMINAL_ENABLED 决定是否注册；
+      // 运行时状态由 capabilities 路由按实际注册结果覆盖为 available/reserved。
+      status: "reserved",
+    },
+    hostRuntime: {
+      // 文件系统（fs_*）与 Terminal 是核心 HostRuntime 能力：以核心注册表
+      // 直接注册，不可被插件启停/重载移除或遮蔽。运行时状态由 capabilities
+      // 路由覆盖（含 defaultCwd / adminRoots / 授权模式）。
+      status: "reserved",
+    },
     plugins: {
       // Agent 生成插件建议；用户可在控制台直接安装、启停和重载。
       // agentInstall 预留：PAN_PILOT_PLUGIN_AUTO_INSTALL=true 时由

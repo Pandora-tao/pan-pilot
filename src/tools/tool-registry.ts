@@ -1,7 +1,9 @@
 import { z } from "zod";
-import type {
-  AgentToolDefinition,
-  AnyAgentTool,
+import {
+  type AgentToolDefinition,
+  type AnyAgentTool,
+  type ToolExecutionContext,
+  defaultToolContext,
 } from "./tool.js";
 
 export type ToolRegistryErrorCode =
@@ -33,14 +35,41 @@ export class ToolRegistryError extends Error {
 
 /** 只允许执行启动时显式注册的工具，不接受任意模块名或函数名。 */
 export class ToolRegistry {
+  /**
+   * 核心 HostRuntime 工具（fs_*、terminal）单独存放：
+   * replaceAll（插件/MCP 原子重建）不得覆盖或移除它们。
+   */
+  private readonly coreTools = new Map<string, AnyAgentTool>();
   private readonly tools = new Map<string, AnyAgentTool>();
 
   constructor(tools: readonly AnyAgentTool[] = []) {
     for (const tool of tools) this.register(tool);
   }
 
+  /**
+   * 注册不可被插件重载移除的核心工具。命名冲突（含与既有核心工具冲突）
+   * 直接抛错；核心工具必须先于依赖它的 replaceAll 注册完毕。
+   */
+  registerCore(tool: AnyAgentTool): void {
+    if (this.coreTools.has(tool.name) || this.tools.has(tool.name)) {
+      throw new ToolRegistryError(
+        "DUPLICATE_TOOL",
+        tool.name,
+        `核心工具 ${tool.name} 已注册`,
+      );
+    }
+    this.coreTools.set(tool.name, tool);
+  }
+
+  /** 核心 HostRuntime 工具名集合：插件与安装流程据此拒绝遮蔽。 */
+  coreNames(): ReadonlySet<string> {
+    return this.coreTools.size === 0
+      ? EMPTY_NAME_SET
+      : new Set(this.coreTools.keys());
+  }
+
   register(tool: AnyAgentTool): void {
-    if (this.tools.has(tool.name)) {
+    if (this.coreTools.has(tool.name) || this.tools.has(tool.name)) {
       throw new ToolRegistryError(
         "DUPLICATE_TOOL",
         tool.name,
@@ -51,48 +80,59 @@ export class ToolRegistry {
   }
 
   /**
-   * 原子替换整个工具集合：先构造新集合并校验重复，全部合法才替换。
-   * 抛错时原集合保持不变，供插件重载保留旧注册表。
+   * 原子替换「非核心」工具集合：先构造新集合并校验重复（含与核心工具冲突），
+   * 全部合法才替换。抛错时原集合保持不变，供插件重载保留旧注册表。
+   * 核心工具始终保留，插件启停/重载不会影响它们。
    */
   replaceAll(tools: readonly AnyAgentTool[]): void {
-    const next = new Map<string, AnyAgentTool>();
+    // 用「核心 + 新集合」做重复校验（含与核心工具冲突），全部合法才替换。
+    const checked = new Map<string, AnyAgentTool>();
+    for (const tool of this.coreTools.values()) checked.set(tool.name, tool);
     for (const tool of tools) {
-      if (next.has(tool.name)) {
+      if (checked.has(tool.name)) {
         throw new ToolRegistryError(
           "DUPLICATE_TOOL",
           tool.name,
-          `工具 ${tool.name} 已注册`,
+          `工具 ${tool.name} 已注册（含核心工具）`,
         );
       }
-      next.set(tool.name, tool);
+      checked.set(tool.name, tool);
     }
+    const next = new Map<string, AnyAgentTool>();
+    for (const tool of tools) next.set(tool.name, tool);
     this.tools.clear();
-    for (const [name, tool] of next) {
-      this.tools.set(name, tool);
-    }
+    for (const [name, tool] of next) this.tools.set(name, tool);
   }
 
   get(name: string): AnyAgentTool | undefined {
-    return this.tools.get(name);
+    return this.tools.get(name) ?? this.coreTools.get(name);
   }
 
   /** 返回可序列化的模型工具声明，不暴露 execute 函数或 Zod 实例。 */
   listDefinitions(): AgentToolDefinition[] {
-    return [...this.tools.values()].map((tool) => ({
+    const merged = mergedTools(this.coreTools, this.tools);
+    return [...merged.values()].map((tool) => ({
       name: tool.name,
       description: tool.description,
       parameters: z.toJSONSchema(tool.inputSchema) as Record<string, unknown>,
     }));
   }
 
+  /** 返回当前注册工具名（注册顺序），供系统提示词等轻量场景使用，无需构造 JSON Schema。 */
+  listNames(): string[] {
+    return [...mergedTools(this.coreTools, this.tools).keys()];
+  }
+
   async execute(
     name: string,
     input: unknown,
-    signal?: AbortSignal,
+    ctx?: ToolExecutionContext,
   ): Promise<unknown> {
-    signal?.throwIfAborted();
+    const context = ctx ?? defaultToolContext();
+    context.signal?.throwIfAborted();
 
-    const tool = this.tools.get(name);
+    const tool = this.tools.get(name)
+      ?? this.coreTools.get(name);
     if (!tool) {
       throw new ToolRegistryError(
         "UNKNOWN_TOOL",
@@ -111,14 +151,14 @@ export class ToolRegistry {
       );
     }
 
-    signal?.throwIfAborted();
+    context.signal?.throwIfAborted();
 
     let result: unknown;
     try {
-      result = await tool.execute(parsed.data, signal);
+      result = await tool.execute(parsed.data, context);
     } catch (error) {
       // 中断属于调用方控制流，保留原始 reason，不包装成普通工具故障。
-      if (signal?.aborted) signal.throwIfAborted();
+      if (context.signal?.aborted) context.signal.throwIfAborted();
       throw new ToolRegistryError(
         "TOOL_EXECUTION_FAILED",
         name,
@@ -130,6 +170,19 @@ export class ToolRegistry {
     assertJsonSerializable(name, result);
     return result;
   }
+}
+
+const EMPTY_NAME_SET: ReadonlySet<string> = new Set();
+
+/** 核心 + 非核心工具的合并视图（核心优先，名称唯一）。 */
+function mergedTools(
+  core: Map<string, AnyAgentTool>,
+  tools: Map<string, AnyAgentTool>,
+): Map<string, AnyAgentTool> {
+  const merged = new Map<string, AnyAgentTool>();
+  for (const [name, tool] of core) merged.set(name, tool);
+  for (const [name, tool] of tools) merged.set(name, tool);
+  return merged;
 }
 
 function assertJsonSerializable(toolName: string, value: unknown): void {

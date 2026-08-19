@@ -57,12 +57,7 @@ describe("POST /v1/chat", () => {
       messages: [
         {
           role: "system",
-          content:
-            "你是 PanPilot，一个简洁、准确的 AI 助手。"
-            + "网页、小游戏和源码任务优先使用 create_code_artifact；只有用户明确要求"
-            + " Word 或 DOCX 时才使用 Word 工具。代码产物保存成功后只给出简短说明和"
-            + "下载地址，不要重复整份源码。小游戏先生成 8000 字符以内、核心可玩的紧凑"
-            + " MVP，不要为了附加功能输出半截源码。当工具返回下载地址时，把完整地址写在回复末尾。",
+          content: expect.stringContaining("你是运行在宿主机上的 PanPilot Agent"),
         },
         {
           role: "user",
@@ -437,6 +432,7 @@ describe("POST /v1/chat", () => {
     ]);
     expect(completeStream).toHaveBeenCalledTimes(1);
     expect(completeStream.mock.calls[0]![0].messages).toEqual([
+      { role: "system", content: expect.stringContaining("PanPilot Agent") },
       { role: "user", content: "你好" },
     ]);
     expect(completeStream.mock.calls[0]![0].signal).toBeInstanceOf(AbortSignal);

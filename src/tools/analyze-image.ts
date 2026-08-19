@@ -31,13 +31,13 @@ export function createAnalyzeImageTool(
       "分析用户上传的图片（mediaId 来自 /v1/media 上传结果），"
       + "返回主体、文字、颜色等结构化描述；不能用于任意文件路径或远程 URL",
     inputSchema: analyzeImageInputSchema,
-    execute(input, signal) {
+    execute(input, ctx) {
       return analyzeControlledMedia(
         { mediaStore, provider: getClient },
         input,
         "image",
         DEFAULT_IMAGE_PROMPT,
-        signal,
+        ctx.signal,
       );
     },
   };

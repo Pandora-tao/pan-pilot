@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Client, Tool } from "@modelcontextprotocol/client";
 import { createMcpTool, mcpToolName } from "../src/mcp/mcp-tool.js";
+import { defaultToolContext } from "../src/tools/tool.js";
 
 describe("MCP tool adapter", () => {
   const definition: Tool = {
@@ -27,7 +28,8 @@ describe("MCP tool adapter", () => {
       isError: true,
     });
     const tool = createMcpTool("demo", definition, { callTool }, 1000);
-    await expect(tool.execute({ text: "hello" })).rejects.toThrow(/返回错误/);
+    await expect(tool.execute({ text: "hello" }, defaultToolContext()))
+      .rejects.toThrow(/返回错误/);
   });
 
   it("rejects MCP results larger than one megabyte", async () => {
@@ -35,7 +37,8 @@ describe("MCP tool adapter", () => {
       content: [{ type: "text", text: "x".repeat(1024 * 1024) }],
     });
     const tool = createMcpTool("demo", definition, { callTool }, 1000);
-    await expect(tool.execute({ text: "hello" })).rejects.toThrow(/1MB/);
+    await expect(tool.execute({ text: "hello" }, defaultToolContext()))
+      .rejects.toThrow(/1MB/);
   });
 
   it("produces deterministic provider-safe names no longer than 64 characters", () => {

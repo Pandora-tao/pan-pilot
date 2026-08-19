@@ -29,7 +29,7 @@ export function createDeclarativeTool(
       name: manifest.name,
       description: manifest.description,
       inputSchema: builtin.inputSchema,
-      execute: (input, signal) => builtin.execute(input, signal),
+      execute: (input, ctx) => builtin.execute(input, ctx),
     };
   }
 
@@ -44,12 +44,12 @@ export function createDeclarativeTool(
     name: manifest.name,
     description: manifest.description,
     inputSchema,
-    async execute(input, signal) {
+    async execute(input, ctx) {
       return executeHttpRequest(
         executor,
         input as Record<string, unknown>,
         httpOptions,
-        signal,
+        ctx.signal,
       );
     },
   };

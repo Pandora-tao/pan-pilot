@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ToolRegistry } from "../src/tools/tool-registry.js";
+import { defaultToolContext } from "../src/tools/tool.js";
 import { createDeclarativeTool } from "../src/plugins/declarative-tool.js";
 import {
   executeHttpRequest,
@@ -57,7 +58,7 @@ describe("createDeclarativeTool", () => {
       {},
     );
 
-    await expect(tool.execute({ value: "你好" })).resolves.toEqual({
+    await expect(tool.execute({ value: "你好" }, defaultToolContext())).resolves.toEqual({
       echoed: "你好",
     });
   });
@@ -103,7 +104,7 @@ describe("createDeclarativeTool", () => {
     };
     const tool = createDeclarativeTool(manifest, new Map(), httpOptions(fetchImpl));
 
-    await expect(tool.execute({ text: "上海" })).resolves.toBe("第一条");
+    await expect(tool.execute({ text: "上海" }, defaultToolContext())).resolves.toBe("第一条");
     expect(String(fetchImpl.mock.calls[0]![0])).toContain(
       "q=%E4%B8%8A%E6%B5%B7",
     );
@@ -124,7 +125,7 @@ describe("createDeclarativeTool", () => {
     };
     const tool = createDeclarativeTool(manifest, new Map(), httpOptions(fetchImpl));
 
-    const result = await tool.execute({ text: "hi" });
+    const result = await tool.execute({ text: "hi" }, defaultToolContext());
 
     expect(result).toEqual({ ok: true });
     const init = fetchImpl.mock.calls[0]![1]!;
@@ -140,7 +141,7 @@ describe("createDeclarativeTool", () => {
     ) as PluginManifest;
     const tool = createDeclarativeTool(manifest, new Map(), httpOptions(fetchImpl));
 
-    await expect(tool.execute({ text: "hi" })).rejects.toThrow(
+    await expect(tool.execute({ text: "hi" }, defaultToolContext())).rejects.toThrow(
       "模板参数 missing 未在入参中提供",
     );
 
@@ -159,7 +160,7 @@ describe("createDeclarativeTool", () => {
       new Map(),
       httpOptions(fetchImpl),
     );
-    await expect(envTool.execute({ text: "hi" })).rejects.toThrow(
+    await expect(envTool.execute({ text: "hi" }, defaultToolContext())).rejects.toThrow(
       "环境变量 PLUGIN_TEST_TOKEN 未配置",
     );
   });
@@ -272,7 +273,7 @@ describe("createDeclarativeTool", () => {
     };
     const tool = createDeclarativeTool(manifest, new Map(), httpOptions(fetchImpl));
 
-    await expect(tool.execute({ text: "hi" })).rejects.toThrow("超时");
+    await expect(tool.execute({ text: "hi" }, defaultToolContext())).rejects.toThrow("超时");
   });
 
   it("rejects non-JSON responses", async () => {
@@ -285,7 +286,7 @@ describe("createDeclarativeTool", () => {
       httpOptions(fetchImpl),
     );
 
-    await expect(tool.execute({ text: "hi" })).rejects.toThrow(
+    await expect(tool.execute({ text: "hi" }, defaultToolContext())).rejects.toThrow(
       "不是有效 JSON",
     );
   });
@@ -300,7 +301,7 @@ describe("createDeclarativeTool", () => {
       httpOptions(fetchImpl),
     );
 
-    await expect(tool.execute({ text: "hi" })).rejects.toThrow("字节上限");
+    await expect(tool.execute({ text: "hi" }, defaultToolContext())).rejects.toThrow("字节上限");
   });
 
   it("sends POST requests with JSON body", async () => {
@@ -317,7 +318,7 @@ describe("createDeclarativeTool", () => {
     };
     const tool = createDeclarativeTool(manifest, new Map(), httpOptions(fetchImpl));
 
-    await tool.execute({ text: "hi" });
+    await tool.execute({ text: "hi" }, defaultToolContext());
 
     const init = fetchImpl.mock.calls[0]![1]!;
     expect(init.method).toBe("POST");
@@ -337,7 +338,7 @@ describe("createDeclarativeTool", () => {
       httpOptions(fetchImpl),
     );
 
-    await tool.execute({ text: "hi" });
+    await tool.execute({ text: "hi" }, defaultToolContext());
   });
 
   it("rejects 3xx redirect responses instead of following them", async () => {
@@ -354,6 +355,6 @@ describe("createDeclarativeTool", () => {
     );
 
     // 任何 3xx 都直接失败，绝不跟随到白名单之外的 host。
-    await expect(tool.execute({ text: "hi" })).rejects.toThrow("返回 301");
+    await expect(tool.execute({ text: "hi" }, defaultToolContext())).rejects.toThrow("返回 301");
   });
 });

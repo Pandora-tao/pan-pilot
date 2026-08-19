@@ -31,13 +31,13 @@ export function createAnalyzeAudioTool(
       "分析用户上传的音频（mediaId 来自 /v1/media 上传结果）："
       + "转写语音并描述说话人、语气与背景声音；不能用于任意文件路径或远程 URL",
     inputSchema: analyzeAudioInputSchema,
-    execute(input, signal) {
+    execute(input, ctx) {
       return analyzeControlledMedia(
         { mediaStore, provider: getClient },
         input,
         "audio",
         DEFAULT_AUDIO_PROMPT,
-        signal,
+        ctx.signal,
       );
     },
   };

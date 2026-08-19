@@ -24,7 +24,8 @@ export function createMcpTool(
     name: publicName,
     description: (`[MCP:${serverName}] ${tool.description?.trim() || tool.name}`).slice(0, 2000),
     inputSchema,
-    async execute(input, signal) {
+    async execute(input, ctx) {
+      const signal = ctx.signal;
       const timeoutSignal = AbortSignal.timeout(timeoutMs);
       const combinedSignal = signal === undefined
         ? timeoutSignal
