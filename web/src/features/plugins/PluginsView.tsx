@@ -1,8 +1,8 @@
-import { Download, Power, RefreshCw, RotateCcw, X } from "lucide-react";
-import { useState } from "react";
+import { Download, Power, RefreshCw, RotateCcw, Undo2, Trash2, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import { ApiClient } from "../../api";
 import { StatusBadge } from "../../components/StatusBadge";
-import type { PluginStatus, PluginSuggestion } from "../../types";
+import type { PluginCandidate, PluginStatus, PluginSuggestion } from "../../types";
 
 interface PluginsViewProps {
   client: ApiClient;
@@ -12,7 +12,7 @@ interface PluginsViewProps {
   toast: (message: string) => void;
 }
 
-/** 设置 → 插件：已安装插件启停、Agent 建议安装、manifest 手动安装。 */
+/** 设置 → 插件：已安装插件启停、沙箱扩展版本管理、Agent 建议安装、待审核扩展、manifest 安装。 */
 export function PluginsView({
   client,
   plugins,
@@ -22,12 +22,26 @@ export function PluginsView({
 }: PluginsViewProps) {
   const [manifestText, setManifestText] = useState("");
   const [busyKey, setBusyKey] = useState("");
+  const [candidates, setCandidates] = useState<PluginCandidate[]>([]);
+
+  const refreshCandidates = async () => {
+    try {
+      setCandidates(await client.pluginCandidates());
+    } catch {
+      // 自我扩展未启用或不可用：保持空列表。
+    }
+  };
+
+  useEffect(() => {
+    void refreshCandidates();
+  }, [client]);
 
   async function run(key: string, action: () => Promise<unknown>, success: string) {
     setBusyKey(key);
     try {
       await action();
       await refresh();
+      await refreshCandidates();
       toast(success);
     } catch (error) {
       toast("操作失败：" + errorMessage(error));
@@ -49,13 +63,14 @@ export function PluginsView({
   }
 
   const enabledCount = plugins.filter((plugin) => plugin.enabled).length;
+  const packages = plugins.filter((plugin) => plugin.kind === "sandbox-js");
 
   return (
     <div className="plugins-body">
       <div className="tab-toolbar">
-        <p>已安装插件可直接启用、禁用；Agent 的建议由你选择安装或忽略，也可以粘贴 manifest 手动安装。</p>
+        <p>已安装插件可直接启用、禁用；沙箱扩展支持版本管理与回滚。Agent 的建议由你选择安装或忽略。</p>
         <div className="view-actions">
-          <button type="button" onClick={() => void refresh()}>
+          <button type="button" onClick={() => void run("refresh", async () => {}, "已刷新")}>
             <RefreshCw aria-hidden="true" size={16} />刷新
           </button>
           <button
@@ -85,8 +100,10 @@ export function PluginsView({
                   <div>
                     <div className="record-name">
                       {plugin.name}
+                      {plugin.kind === "sandbox-js" && <StatusBadge status="sandbox-js" label="沙箱" />}
                       {plugin.executorType && <StatusBadge status={plugin.executorType} />}
                       <StatusBadge status={plugin.state} />
+                      {plugin.activeVersion && <span className="record-meta">v{plugin.activeVersion}</span>}
                     </div>
                     <p className="record-desc">
                       {plugin.description || "（此插件未提供描述）"}
@@ -100,27 +117,69 @@ export function PluginsView({
                       ) : null}
                       {plugin.loadedAt
                         ? `加载于 ${new Date(plugin.loadedAt).toLocaleString()}`
-                        : "尚未加载"}
+                        : plugin.version ? `版本 ${plugin.version}` : "尚未加载"}
                     </div>
                     {plugin.error && <div className="record-error">{plugin.error}</div>}
                   </div>
                   <div className="item-actions">
-                    {plugin.state === "error" ? (
-                      <span className="disabled-note">加载失败，不可启停</span>
+                    {plugin.kind === "sandbox-js" ? (
+                      <>
+                        <button
+                          className="small"
+                          type="button"
+                          disabled={busyKey !== ""}
+                          onClick={() => void run(
+                            `rollback-${plugin.name}`,
+                            () => client.rollbackPackage(plugin.name),
+                            `扩展 ${plugin.name} 已回滚`,
+                          )}
+                        >
+                          <Undo2 aria-hidden="true" size={14} />回滚
+                        </button>
+                        <button
+                          className="small primary"
+                          type="button"
+                          disabled={busyKey !== ""}
+                          onClick={() => void run(
+                            `toggle-${plugin.name}`,
+                            () => client.setPluginEnabled(plugin.name, !plugin.enabled),
+                            `扩展 ${plugin.name} 已${plugin.enabled ? "禁用" : "启用"}`,
+                          )}
+                        >
+                          <Power aria-hidden="true" size={14} />
+                          {plugin.enabled ? "禁用" : "启用"}
+                        </button>
+                        <button
+                          className="small danger"
+                          type="button"
+                          disabled={busyKey !== ""}
+                          onClick={() => void run(
+                            `uninstall-${plugin.name}`,
+                            () => client.uninstallPackage(plugin.name),
+                            `扩展 ${plugin.name} 已卸载`,
+                          )}
+                        >
+                          <Trash2 aria-hidden="true" size={14} />卸载
+                        </button>
+                      </>
                     ) : (
-                      <button
-                        className="small"
-                        type="button"
-                        disabled={busyKey !== ""}
-                        onClick={() => void run(
-                          `toggle-${plugin.name}`,
-                          () => client.setPluginEnabled(plugin.name, !plugin.enabled),
-                          `插件 ${plugin.name} 已${plugin.enabled ? "禁用" : "启用"}`,
-                        )}
-                      >
-                        <Power aria-hidden="true" size={14} />
-                        {plugin.enabled ? "禁用" : "启用"}
-                      </button>
+                      plugin.state === "error" ? (
+                        <span className="disabled-note">加载失败，不可启停</span>
+                      ) : (
+                        <button
+                          className="small"
+                          type="button"
+                          disabled={busyKey !== ""}
+                          onClick={() => void run(
+                            `toggle-${plugin.name}`,
+                            () => client.setPluginEnabled(plugin.name, !plugin.enabled),
+                            `插件 ${plugin.name} 已${plugin.enabled ? "禁用" : "启用"}`,
+                          )}
+                        >
+                          <Power aria-hidden="true" size={14} />
+                          {plugin.enabled ? "禁用" : "启用"}
+                        </button>
+                      )
                     )}
                   </div>
                 </div>
@@ -128,6 +187,61 @@ export function PluginsView({
             </div>
           ) : (
             <div className="empty-tip">没有安装任何插件。</div>
+          )}
+        </section>
+
+        <section className="surface section-stack">
+          <div className="section-head">
+            <div>
+              <h3>待审核扩展</h3>
+              <p>Agent 提交的沙箱扩展候选包；安装必须由你确认（携带不可变摘要）。</p>
+            </div>
+            <span className="section-count">{candidates.length}</span>
+          </div>
+          {candidates.length ? (
+            <div className="record-list">
+              {candidates.map((candidate) => (
+                <div className="record-item" key={candidate.id}>
+                  <div>
+                    <div className="record-name">
+                      {candidate.name}
+                      <StatusBadge status="sandbox-js" label="沙箱" />
+                      <span className="record-meta">v{candidate.version}</span>
+                    </div>
+                    <p className="record-desc">摘要：{candidate.digest}</p>
+                    <div className="record-meta">创建于 {new Date(candidate.createdAt).toLocaleString()}</div>
+                  </div>
+                  <div className="item-actions">
+                    <button
+                      className="small"
+                      type="button"
+                      disabled={busyKey !== ""}
+                      onClick={() => void run(
+                        `reject-${candidate.id}`,
+                        () => client.discardPluginCandidate(candidate.id),
+                        "已拒绝该候选包",
+                      )}
+                    >
+                      <X aria-hidden="true" size={14} />拒绝
+                    </button>
+                    <button
+                      className="small primary"
+                      type="button"
+                      disabled={busyKey !== ""}
+                      onClick={() => void run(
+                        `install-${candidate.id}`,
+                        () => client.installPluginCandidate(candidate.id, candidate.digest),
+                        `扩展 ${candidate.name} 已安装并启用`,
+                      )}
+                    >
+                      <Download aria-hidden="true" size={14} />安装并启用
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-tip">没有待审核的扩展。</div>
           )}
         </section>
 

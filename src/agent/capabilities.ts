@@ -59,12 +59,15 @@ export const agentCapabilities = {
     },
     plugins: {
       // Agent 生成插件建议；用户可在控制台直接安装、启停和重载。
-      // agentInstall 预留：PAN_PILOT_PLUGIN_AUTO_INSTALL=true 时由
-      // capabilities 路由声明为 available（Agent 可自主安装）。
+      // install_plugin / 自主安装路径已退役：Agent 只能提交候选包，安装由用户确认。
       status: "available",
       userManaged: true,
       suggestions: true,
-      agentInstall: { status: "reserved" },
+    },
+    selfExtension: {
+      // 沙箱插件自扩展：仅当 PAN_PILOT_SELF_EXTENSION_ENABLED 且已配置 API 鉴权
+      // 时由 capabilities 路由覆盖为 available（含 builder/sandbox 版本）。
+      status: "reserved",
     },
     scheduledTasks: {
       status: "available",

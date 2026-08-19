@@ -127,6 +127,14 @@ export class PluginManager {
     return this.toStatuses(this.entries, this.loadErrors);
   }
 
+  /**
+   * 仅重新合并动态工具源（MCP / 沙箱扩展），不重扫插件 manifest：
+   * 沙箱扩展安装/卸载/回滚后调用，避免坏插件阻断扩展的原子刷新。
+   */
+  refreshDynamicTools(): void {
+    this.rebuildRegistry();
+  }
+
   /** 按名字查询当前状态（含错误目录），供安装与启停校验。 */
   getStatus(name: string): PluginStatus | undefined {
     return this.listStatuses().find((status) => status.name === name);

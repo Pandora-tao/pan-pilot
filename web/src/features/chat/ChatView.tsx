@@ -34,10 +34,7 @@ import { MarkdownContent } from "./markdown";
 import { PermissionModal } from "./PermissionModal";
 import { SseEventParser } from "./sse-events";
 
-const SYSTEM_MESSAGE: ChatMessage = {
-  role: "system",
-  content: "你是 PanPilot，一个简洁、准确的 AI 助手。你可以使用计算器、当前时间、代码产物和已连接的 MCP 工具；使用工具前先说明计划。网页、小游戏和源码任务优先使用 create_code_artifact，只有用户明确要求 Word 或 DOCX 时才使用 Office MCP 的 Word 工具。代码产物保存成功后只给出简短说明和下载地址，不要重复整份源码。小游戏先生成 8000 字符以内、核心可玩的紧凑 MVP，不要为了附加功能输出半截源码。回复正文使用 Markdown 排版（标题、列表、加粗等），长回复尤其要用标题分节、让结构清晰；多行代码放在 ``` 围栏代码块内并标注语言（如 ```ts 或 ```html），行内简短代码用单个反引号包裹；完整源码仍优先 create_code_artifact。当工具返回下载地址时，把完整地址写在回复末尾，方便用户直接下载。",
-};
+// 系统提示词由服务端统一注入（唯一来源）；前端不携带可覆盖服务端 system 消息。
 
 interface UiMessage {
   id: string;
@@ -112,7 +109,7 @@ export function ChatView({
   onSent,
   toast,
 }: ChatViewProps) {
-  const [conversation, setConversation] = useState<ChatMessage[]>([SYSTEM_MESSAGE]);
+  const [conversation, setConversation] = useState<ChatMessage[]>([]);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<UiProgress | null>(null);
@@ -149,10 +146,7 @@ export function ChatView({
       .map(toUiMessage);
     messagesRef.current = restored;
     setMessages(restored);
-    setConversation([
-      SYSTEM_MESSAGE,
-      ...restored.map(({ role, content }) => ({ role, content })),
-    ]);
+    setConversation(restored.map(({ role, content }) => ({ role, content })));
     setRunning(false);
     setProgress(null);
     setPendingPermission(null);

@@ -511,3 +511,29 @@ build；bundle 阶段导出「应用目录 + Linux Node 二进制」的自包含
 - Java 业务服务工具（`.env.example` 已预留 `JAVA_SERVICE_URL`）。
 - 在方舟控制台开通 `doubao-seed-2-0-lite-260428` 后，完成音频真实端点验收并
   将 `capabilities.media.audio` 从 `blocked` 改为 `available`。
+
+### 自主开发、审核并安装工具包（受限沙箱自扩展）
+
+启用 `PAN_PILOT_SELF_EXTENSION_ENABLED=true`（且已配置 `PAN_PILOT_API_TOKEN`）后，
+Agent 可以用 `plugin_draft_create/update/validate/submit` 生成沙箱插件草稿：
+固定流水线（TypeScript 类型检查 → pnpm `--ignore-scripts` 精确版本依赖 → esbuild
+浏览器单文件构建 → QuickJS 沙箱测试）产出生成不可变候选包与风险报告；`install_plugin`
+与 `PAN_PILOT_PLUGIN_AUTO_INSTALL` 路径已退役，Agent 只能提交候选包。
+
+- 候选包持久化在 `PAN_PILOT_PLUGIN_RUNTIME_DIR`（默认 `.pan-pilot/plugin-runtime`），
+  不写入 `plugins/`；控制台「插件」页新增「待审核扩展」：展示源码/风险/依赖/测试/
+  摘要，用户「安装并启用」时服务端重算 SHA-256 摘要，任何变化都要求重新审核。
+- 安装采用版本目录 + 原子 active 指针：校验 → 沙箱启动发现工具 → 烟测 → 原子切换并
+  刷新 ToolRegistry，失败保留旧版本；支持禁用/回滚/卸载（持久 KV 单独确认删除）。
+- 生成代码在独立 Worker + 全新 QuickJS/WASM 运行时执行（64MB 内存/1MB 栈/5s 计算/
+  30s 墙钟/100 次宿主调用/1MB IO），无 `process`/`require`/原生 fetch/动态模块；
+  文件、敏感读取与终端命令经宿主桥复用既有授权闭环（安装确认 ≠ 运行时放行）。
+- 依赖只允许 HTTPS registry 精确版本，拒绝安装脚本/原生扩展/Node 内置模块/未声明
+  import，传递依赖与 integrity 进入审核报告；网络 host 在安装审核时授权，运行时仍
+  静态校验 host、方法、重定向、响应大小与超时。
+- 开发工具仅限交互式聊天；Agent 不能修改 PanPilot 核心源码/核心工具/系统提示词/配置。
+- `/v1/capabilities` 新增 `selfExtension`（builder/sandbox 版本与不可用原因）。
+
+相关接口：`/v1/plugin-candidates`（列表/详情/安装携带 digest/拒绝）、
+`/v1/plugins/:name/versions|rollback|uninstall`、`/v1/plugins` 增加
+`kind/version/runtime/activeVersion`。

@@ -27,3 +27,7 @@ media/
 /*.pptx
 # 本地一次性脚本（generate-resume.ts 依赖的 docx 包已移除，无法运行）
 /scripts/
+# Runtime self-extension store (PAN_PILOT_PLUGIN_RUNTIME_DIR default).
+/.pan-pilot/
+# 本地 pnpm 内容寻址存储缓存，不提交
+/.pnpm-store/

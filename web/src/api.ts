@@ -8,6 +8,7 @@ import type {
   PermissionDecisionAction,
   PermissionRequest,
   PermissionRule,
+  PluginCandidate,
   PluginStatus,
   PluginSuggestion,
   ScheduledTask,
@@ -77,6 +78,43 @@ export class ApiClient {
   async plugins(): Promise<PluginStatus[]> {
     const data = await this.json<{ plugins: PluginStatus[] }>("/v1/plugins");
     return data.plugins ?? [];
+  }
+
+  async pluginCandidates(): Promise<PluginCandidate[]> {
+    const data = await this.json<{ candidates: PluginCandidate[] }>(
+      "/v1/plugin-candidates",
+    );
+    return data.candidates ?? [];
+  }
+
+  installPluginCandidate(id: string, digest: string): Promise<unknown> {
+    return this.json(`/v1/plugin-candidates/${encodeURIComponent(id)}/install`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ digest }),
+    });
+  }
+
+  discardPluginCandidate(id: string): Promise<unknown> {
+    return this.request(`/v1/plugin-candidates/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .then(async (response) => {
+        if (!response.ok) throw new ApiError(await readError(response), response.status);
+      });
+  }
+
+  packageVersions(name: string): Promise<{ versions: string[] }> {
+    return this.json(`/v1/plugins/${encodeURIComponent(name)}/versions`);
+  }
+
+  rollbackPackage(name: string): Promise<unknown> {
+    return this.json(`/v1/plugins/${encodeURIComponent(name)}/rollback`, { method: "POST" });
+  }
+
+  uninstallPackage(name: string): Promise<unknown> {
+    return this.request(`/v1/plugins/${encodeURIComponent(name)}`, { method: "DELETE" })
+      .then(async (response) => {
+        if (!response.ok) throw new ApiError(await readError(response), response.status);
+      });
   }
 
   async pluginSuggestions(): Promise<PluginSuggestion[]> {

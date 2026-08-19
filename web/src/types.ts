@@ -48,6 +48,22 @@ export interface PluginStatus {
   executorType?: "builtin" | "http";
   /** HTTP 型插件的完整目标 URL；builtin 型缺省。 */
   httpUrl?: string;
+  /** 沙箱包：kind=sandbox-js；否则 declarative。 */
+  kind?: "declarative" | "sandbox-js";
+  version?: string;
+  runtime?: string;
+  capabilities?: string[];
+  activeVersion?: string;
+}
+
+/** 待审核的沙箱扩展候选包（Agent 提交、用户确认安装）。 */
+export interface PluginCandidate {
+  id: string;
+  name: string;
+  version: string;
+  digest: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export interface PluginInstallPreview {

@@ -47,6 +47,11 @@ import { ScheduledTaskScheduler } from "./scheduled-tasks/scheduled-task-schedul
 import { ScheduledTaskStore } from "./scheduled-tasks/scheduled-task-store.js";
 import { registerSessionRoute } from "./routes/session-route.js";
 import { SessionStore } from "./sessions/session-store.js";
+import { RuntimeStore } from "./extension/runtime-store.js";
+import { SandboxPackageManager } from "./extension/package-manager.js";
+import { registerPluginCandidatesRoute } from "./routes/plugin-candidates-route.js";
+import { createPluginDraftTools } from "./tools/plugin-draft.js";
+import type { AnyAgentTool } from "./tools/tool.js";
 import { PluginManager } from "./plugins/plugin-manager.js";
 import { PluginService } from "./plugins/plugin-service.js";
 import { registerPluginRoutes } from "./plugins/plugin-routes.js";
@@ -59,7 +64,6 @@ import { createFilesystemTools } from "./tools/filesystem.js";
 import { getCurrentTimeTool } from "./tools/get-current-time.js";
 import { createListPluginsTool } from "./tools/list-plugins.js";
 import type { MultimodalClientProvider } from "./tools/media-common.js";
-import { createInstallPluginTool } from "./tools/install-plugin.js";
 import { createReadAttachmentTool } from "./tools/read-attachment.js";
 import { createSuggestPluginTool } from "./tools/suggest-plugin.js";
 import { textStatsTool } from "./tools/text-stats.js";
@@ -100,11 +104,6 @@ export interface BuildAppOptions {
   pluginAllowedHosts?: string;
   /** 逗号分隔的允许 ${env:NAME} 引用的环境变量名白名单。 */
   pluginAllowedEnvVars?: string;
-  /**
-   * 是否允许 Agent 通过 install_plugin 自主安装插件；默认读取
-   * PAN_PILOT_PLUGIN_AUTO_INSTALL，未配置时关闭（fail-closed）。
-   */
-  pluginAutoInstall?: boolean;
   /** http 插件执行用的 fetch 实现，测试注入替身。 */
   pluginFetchImpl?: typeof fetch;
   /** 媒体存储目录，默认取 PAN_PILOT_MEDIA_DIR 或 ./media。 */
@@ -137,6 +136,14 @@ export interface BuildAppOptions {
   extraSensitivePaths?: readonly string[];
   /** 终端额外允许继承的环境变量名白名单；默认取 PAN_PILOT_TERMINAL_ENV_ALLOWLIST。 */
   terminalEnvAllowlist?: string[];
+  /** 自我扩展开关（另需已配置 API 鉴权）；默认取 PAN_PILOT_SELF_EXTENSION_ENABLED。 */
+  selfExtensionEnabled?: boolean;
+  /** 沙箱插件运行目录；默认取 PAN_PILOT_PLUGIN_RUNTIME_DIR。 */
+  pluginRuntimeDir?: string;
+  /** 依赖 npm registry；默认取 PAN_PILOT_PLUGIN_NPM_REGISTRY。 */
+  pluginNpmRegistry?: string;
+  /** pnpm 可执行文件；默认取 PAN_PILOT_PNPM_BIN。 */
+  pluginPnpmBin?: string;
   /** 默认 agent 系统提示词正文；undefined=内置默认，空字符串=不注入，其余=完全覆盖。 */
   systemPrompt?: string;
   /** 定时任务执行上限，生产默认 10 分钟；测试可缩短。 */
@@ -163,7 +170,7 @@ export interface BuildAppOptions {
   mcpFetchImpl?: typeof fetch;
   /** 测试或嵌入调用方注入 MCP 配置环境变量视图。 */
   mcpEnv?: Readonly<Record<string, string | undefined>>;
-  /** 测试注入 MCP 内存传输。 */
+  /** 测试注入 MCP 传输。 */
   mcpTransportFactory?: (name: string, config: McpConfig["servers"][string]) => Transport;
 }
 
@@ -326,13 +333,8 @@ export function buildApp(options: BuildAppOptions = {}) {
     current: undefined,
   };
   const mcpRef: { current: McpManager | undefined } = { current: undefined };
-  // Agent 自主安装默认 fail-closed；开启后 install_plugin 才可执行。
-  // 工具本身始终注册（供 plugins/install_plugin 自引用解析），开关只在执行时生效。
-  const pluginAutoInstall = options.pluginAutoInstall
-    ?? isEnabled(process.env.PAN_PILOT_PLUGIN_AUTO_INSTALL);
-  // 内容内置工具 + 两个只读/建议管理工具构成完整 builtin 集合，
-  // PluginManager（装载）与 PluginService（安装校验）
-  // 使用完全一致的集合，避免 builtinNames/refs 在两个边界上漂移。
+  // 内容内置工具 + 只读/建议管理工具构成完整 builtin 集合（install_plugin 已退役：
+  // Agent 只能通过 plugin_draft_submit 提交候选包，安装由已鉴权用户接口完成）。
   const allBuiltinTools = [
     ...builtinTools,
     createListPluginsTool(() => {
@@ -347,13 +349,18 @@ export function buildApp(options: BuildAppOptions = {}) {
       }
       return serviceRef.current;
     }),
-    createInstallPluginTool(() => {
-      if (serviceRef.current === undefined) {
-        throw new Error("插件服务尚未就绪");
-      }
-      return serviceRef.current;
-    }, pluginAutoInstall),
   ];
+  // 自我扩展（沙箱插件）管理器 + 开发工具：仅当 PAN_PILOT_SELF_EXTENSION_ENABLED 且
+  // 已配置 API 鉴权时启用。sandboxRef/devToolsRef/pluginManagerRef 先声明供闭包引用。
+  const sandboxRef: { current: SandboxPackageManager | undefined } = { current: undefined };
+  const devToolsRef: { current: AnyAgentTool[] } = { current: [] };
+  const pluginManagerRef: { current: PluginManager | undefined } = { current: undefined };
+  const selfExtensionEnabled = (options.selfExtensionEnabled
+    ?? isEnabled(process.env.PAN_PILOT_SELF_EXTENSION_ENABLED))
+    && apiToken !== "";
+  const pluginRuntimeDir = options.pluginRuntimeDir
+    ?? process.env.PAN_PILOT_PLUGIN_RUNTIME_DIR
+    ?? "./.pan-pilot/plugin-runtime";
   const pluginManager = new PluginManager({
     pluginsDir,
     builtinTools: allBuiltinTools,
@@ -363,10 +370,15 @@ export function buildApp(options: BuildAppOptions = {}) {
     ...(options.pluginFetchImpl === undefined
       ? {}
       : { fetchImpl: options.pluginFetchImpl }),
-    additionalTools: () => mcpRef.current?.listTools() ?? [],
+    additionalTools: () => [
+      ...mcpRef.current?.listTools() ?? [],
+      ...devToolsRef.current,
+      ...(sandboxRef.current?.syncTools() ?? []),
+    ],
     // 核心 HostRuntime 工具名不可被插件遮蔽/卸载。
     reservedNames,
   });
+  pluginManagerRef.current = pluginManager;
   const pluginService = new PluginService({
     manager: pluginManager,
     builtinTools: allBuiltinTools,
@@ -410,6 +422,37 @@ export function buildApp(options: BuildAppOptions = {}) {
     permissionService,
   });
   schedulerRef.current = scheduledTaskScheduler;
+
+  // 自我扩展（沙箱插件）启用时：初始化运行存储 + 管理器，注册开发工具，刷新注册表。
+  if (selfExtensionEnabled) {
+    const extensionStore = new RuntimeStore(pluginRuntimeDir);
+    const extensionManager = new SandboxPackageManager({
+      store: extensionStore,
+      hostCwd,
+      adminRoots,
+      registry: options.pluginNpmRegistry
+        ?? process.env.PAN_PILOT_PLUGIN_NPM_REGISTRY
+        ?? "https://registry.npmjs.org",
+      ...(options.pluginPnpmBin === undefined
+        ? (process.env.PAN_PILOT_PNPM_BIN === undefined
+          ? {} : { pnpmBin: process.env.PAN_PILOT_PNPM_BIN })
+        : { pnpmBin: options.pluginPnpmBin }),
+      onRegistryChanged: async () => {
+        await extensionManager.refreshTools();
+        pluginManagerRef.current?.refreshDynamicTools();
+      },
+    });
+    sandboxRef.current = extensionManager;
+    devToolsRef.current = createPluginDraftTools(() => {
+      if (sandboxRef.current === undefined) {
+        throw new Error("自我扩展管理器尚未就绪");
+      }
+      return sandboxRef.current;
+    });
+    // 启动时空包无工具；安装后由 onRegistryChanged 刷新。这里直接预热缓存。
+    void extensionManager.refreshTools();
+  }
+
   for (const status of pluginManager.loadInitial()) {
     if (status.state === "error") {
       app.log.warn(
@@ -464,11 +507,11 @@ export function buildApp(options: BuildAppOptions = {}) {
   registerConsoleRoute(app);
   registerConsoleAuthRoute(app, consoleAuth);
   registerCapabilitiesRoute(app, {
-    pluginAutoInstall,
     filesystemEnabled: fsEnabled,
     filesystemRoots: adminRoots,
     terminalEnabled: terminalEnabledConfig,
     hostCwd,
+    selfExtensionEnabled,
   });
   registerModelsRoute(app, modelRegistry);
   registerChatRoute(app, modelRegistry, toolRegistry, {
@@ -486,7 +529,15 @@ export function buildApp(options: BuildAppOptions = {}) {
     permissionService,
   });
   registerPermissionRoute(app, permissionService);
-  registerPluginRoutes(app, pluginManager, pluginService);
+  registerPluginRoutes(
+    app,
+    pluginManager,
+    pluginService,
+    selfExtensionEnabled ? sandboxRef.current : undefined,
+  );
+  if (selfExtensionEnabled && sandboxRef.current !== undefined) {
+    registerPluginCandidatesRoute(app, sandboxRef.current);
+  }
   registerArtifactRoute(app, artifactStore);
   registerScheduledTaskRoutes(app, scheduledTaskScheduler);
   registerSessionRoute(app, sessionStore);
