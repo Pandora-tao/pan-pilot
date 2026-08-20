@@ -1,4 +1,3 @@
-import { build } from "esbuild";
 import path from "node:path";
 import { ExtensionError } from "../validate.js";
 
@@ -30,6 +29,9 @@ export interface BundleBuildOptions {
  * （QuickJS 无 require 加载器）。Agent 不能提供构建命令或打包配置。
  */
 export async function buildBundle(options: BundleBuildOptions): Promise<{ outputBytes: number }> {
+  // esbuild 是 devDependency（构建工具）；只有在真正构建扩展包时才懒加载，
+  // 避免生产 prod 依赖无 esbuild 时服务启动即失败。
+  const { build } = await import("esbuild");
   const result = await build({
     entryPoints: [options.entry],
     bundle: true,
